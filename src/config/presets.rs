@@ -16,27 +16,27 @@ fn openclaw_preset() -> Preset {
     Preset {
         id: "openclaw".to_string(),
         label: "OpenClaw".to_string(),
-        detection_paths: paths(["~/.openclaw", "~/.config/openclaw"]),
+        detection_paths: paths(["~/.openclaw"]),
         scan_targets: vec![
-            scan_target(ScanDomain::Config, ["~/.openclaw", "~/.config/openclaw"]),
             scan_target(
-                ScanDomain::Skills,
-                ["~/.openclaw/skills", "~/.config/openclaw/skills"],
+                ScanDomain::Config,
+                [
+                    "~/.openclaw/openclaw.json",
+                    "~/.openclaw/exec-approvals.json",
+                    "~/.openclaw/agents/*/agent/auth-profiles.json",
+                ],
             ),
-            scan_target(
-                ScanDomain::Mcp,
-                ["~/.openclaw/mcp", "~/.config/openclaw/mcp"],
-            ),
-            scan_target(
-                ScanDomain::Env,
-                ["~/.openclaw/.env", "~/.config/openclaw/.env"],
-            ),
+            scan_target(ScanDomain::Skills, ["~/.openclaw/skills"]),
+            // OpenClaw MCP configuration currently lives inside the main JSON5 config.
+            scan_target(ScanDomain::Mcp, ["~/.openclaw/openclaw.json"]),
+            scan_target(ScanDomain::Env, ["~/.openclaw/.env"]),
         ],
         critical_files: paths([
-            "~/.openclaw/config.toml",
+            "~/.openclaw/openclaw.json",
             "~/.openclaw/.env",
-            "~/.openclaw/mcp.json",
-            "~/.config/openclaw/config.toml",
+            "~/.openclaw/exec-approvals.json",
+            "~/.openclaw/credentials/",
+            "~/.openclaw/agents/*/agent/auth-profiles.json",
         ]),
         excluded_dirs: vec![
             ".git".to_string(),
