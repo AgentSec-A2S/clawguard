@@ -2,6 +2,7 @@ pub mod cve;
 pub mod finding;
 pub mod mcp;
 pub mod openclaw;
+pub mod secrets;
 pub mod severity;
 pub mod skills;
 
