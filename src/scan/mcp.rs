@@ -252,6 +252,7 @@ fn suspicious_launcher_evidence(command: Option<&str>, args: &[String]) -> Optio
         if args.iter().any(|arg| arg == "--yes") {
             return Some("bunx --yes".to_string());
         }
+        return Some("bunx".to_string());
     }
 
     if launcher_name == "npm" && args.iter().any(|arg| arg == "exec") {

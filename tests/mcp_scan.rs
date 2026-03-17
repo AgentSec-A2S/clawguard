@@ -72,6 +72,38 @@ fn equivalent_auto_install_launchers_are_flagged() {
         .findings
         .iter()
         .any(|finding| finding.evidence.as_deref() == Some("npx --yes")));
+    assert!(output.findings.iter().all(|finding| {
+        finding.evidence.as_deref() != Some("browser-mcp@1.2.3")
+            && finding.evidence.as_deref() != Some("@modelcontextprotocol/server-fetch@1.0.0")
+    }));
+}
+
+#[test]
+fn bare_bunx_launcher_is_flagged_as_suspicious() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("bare-bunx.json");
+    fs::write(
+        &config_path,
+        r#"
+        {
+          mcpServers: {
+            docs: {
+              command: "bunx",
+              args: ["@modelcontextprotocol/server-fetch@1.0.0"],
+            },
+          },
+        }
+        "#,
+    )
+    .expect("bare bunx fixture should be written");
+
+    let output = scan_mcp_configs(&[config_path], 1024 * 1024);
+
+    assert!(output.findings.iter().any(|finding| {
+        finding.category == FindingCategory::Mcp
+            && finding.recommended_action.label == "Review this MCP launcher before enabling it"
+            && finding.evidence.as_deref() == Some("bunx")
+    }));
 }
 
 #[test]

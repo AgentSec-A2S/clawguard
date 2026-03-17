@@ -1,0 +1,18 @@
+{
+  // JSON5 on purpose
+  agents: {
+    defaults: {
+      sandbox: {
+        mode: "off",
+        docker: {
+          network: "host",
+        },
+      },
+    },
+  },
+  tools: {
+    exec: {
+      host: "sandbox",
+    },
+  },
+}

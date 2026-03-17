@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "primary": {
+      "provider": "openai",
+      "keyRef": "env:OPENAI_API_KEY"
+    }
+  }
+}

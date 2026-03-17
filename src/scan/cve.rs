@@ -1,0 +1,208 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use semver::{Version, VersionReq};
+use serde::Deserialize;
+
+use super::{Finding, FindingCategory, Fixability, RecommendedAction, RuntimeConfidence, Severity};
+
+#[derive(Debug, Deserialize)]
+struct AdvisoryFeed {
+    #[serde(default)]
+    advisories: Vec<AdvisoryEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdvisoryEntry {
+    id: String,
+    package: String,
+    affected: String,
+    severity: String,
+    summary: String,
+    recommendation: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackageManifest {
+    name: Option<String>,
+    version: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PackageEvidence {
+    path: String,
+    package: String,
+    version: Version,
+    version_text: String,
+}
+
+pub fn scan_openclaw_advisories(
+    package_manifest_paths: &[PathBuf],
+    advisory_feed_path: &Path,
+    max_file_size_bytes: u64,
+) -> Vec<Finding> {
+    let Some(feed) = load_advisory_feed(advisory_feed_path, max_file_size_bytes) else {
+        return vec![info_finding(
+            advisory_feed_path,
+            "advisory-feed-unavailable",
+            "The local advisory feed could not be loaded, so OpenClaw CVE matching is incomplete.",
+            "Restore the local advisory feed before trusting CVE results",
+        )];
+    };
+
+    let packages = load_package_evidence(package_manifest_paths, max_file_size_bytes);
+    if packages.is_empty() {
+        let fallback_path = package_manifest_paths
+            .first()
+            .map(PathBuf::as_path)
+            .unwrap_or(advisory_feed_path);
+        return vec![info_finding(
+            fallback_path,
+            "package-version-unavailable",
+            "No readable OpenClaw package manifest with a parseable version was found, so advisory matching cannot be trusted.",
+            "Provide OpenClaw version evidence before trusting CVE results",
+        )];
+    }
+
+    let mut findings = Vec::new();
+
+    for package in packages {
+        for advisory in &feed.advisories {
+            if advisory.package != package.package {
+                continue;
+            }
+
+            let Ok(requirement) = VersionReq::parse(&advisory.affected) else {
+                continue;
+            };
+
+            if !requirement.matches(&package.version) {
+                continue;
+            }
+
+            findings.push(build_advisory_finding(&package, advisory));
+        }
+    }
+
+    findings.sort_by(|left, right| {
+        right
+            .severity
+            .cmp(&left.severity)
+            .then_with(|| left.path.cmp(&right.path))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    findings
+}
+
+fn load_advisory_feed(path: &Path, max_file_size_bytes: u64) -> Option<AdvisoryFeed> {
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > max_file_size_bytes {
+        return None;
+    }
+
+    let contents = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+fn load_package_evidence(paths: &[PathBuf], max_file_size_bytes: u64) -> Vec<PackageEvidence> {
+    let mut sorted_paths = paths.to_vec();
+    sorted_paths.sort();
+
+    let mut evidence = Vec::new();
+
+    for path in sorted_paths {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > max_file_size_bytes {
+            continue;
+        }
+
+        let Ok(contents) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(manifest) = serde_json::from_str::<PackageManifest>(&contents) else {
+            continue;
+        };
+
+        let Some(package) = manifest.name.map(|value| value.trim().to_string()) else {
+            continue;
+        };
+        let Some(version_text) = manifest.version.map(|value| value.trim().to_string()) else {
+            continue;
+        };
+        let Ok(version) = Version::parse(&version_text) else {
+            continue;
+        };
+
+        evidence.push(PackageEvidence {
+            path: resolved_path_string(&path),
+            package,
+            version,
+            version_text,
+        });
+    }
+
+    evidence
+}
+
+fn build_advisory_finding(package: &PackageEvidence, advisory: &AdvisoryEntry) -> Finding {
+    Finding {
+        id: format!("cve:{}:{}", advisory.id, package.path),
+        detector_id: "cve".to_string(),
+        severity: severity_from_advisory(&advisory.severity),
+        category: FindingCategory::Advisory,
+        runtime_confidence: RuntimeConfidence::ActiveRuntime,
+        path: package.path.clone(),
+        line: None,
+        evidence: Some(format!("{}@{}", package.package, package.version_text)),
+        plain_english_explanation: format!(
+            "{} matches advisory {} ({})",
+            package.package, advisory.id, advisory.summary
+        ),
+        recommended_action: RecommendedAction {
+            label: "Upgrade OpenClaw to a non-vulnerable version".to_string(),
+            command_hint: Some(advisory.recommendation.clone()),
+        },
+        fixability: Fixability::Manual,
+        fix: None,
+    }
+}
+
+fn info_finding(path: &Path, kind: &str, explanation: &str, action_label: &str) -> Finding {
+    Finding {
+        id: format!("cve:{kind}:{}", resolved_path_string(path)),
+        detector_id: "cve".to_string(),
+        severity: Severity::Info,
+        category: FindingCategory::Advisory,
+        runtime_confidence: RuntimeConfidence::ActiveRuntime,
+        path: resolved_path_string(path),
+        line: None,
+        evidence: None,
+        plain_english_explanation: explanation.to_string(),
+        recommended_action: RecommendedAction {
+            label: action_label.to_string(),
+            command_hint: None,
+        },
+        fixability: Fixability::AdvisoryOnly,
+        fix: None,
+    }
+}
+
+fn severity_from_advisory(value: &str) -> Severity {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "critical" => Severity::Critical,
+        "high" => Severity::High,
+        "medium" | "moderate" => Severity::Medium,
+        "low" => Severity::Low,
+        _ => Severity::Info,
+    }
+}
+
+fn resolved_path_string(path: &Path) -> String {
+    fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}

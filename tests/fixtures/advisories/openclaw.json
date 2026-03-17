@@ -1,0 +1,12 @@
+{
+  "advisories": [
+    {
+      "id": "CG-OPENCLAW-2026-0001",
+      "package": "openclaw",
+      "affected": ">=2026.3.0, <2026.3.20",
+      "severity": "high",
+      "summary": "Example vulnerable range for local matcher coverage",
+      "recommendation": "Upgrade to 2026.3.20 or later"
+    }
+  ]
+}
