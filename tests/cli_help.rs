@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use tempfile::tempdir;
 
 fn stdout_text(assert: &assert_cmd::assert::Assert) -> String {
     String::from_utf8_lossy(&assert.get_output().stdout).into_owned()
@@ -31,8 +32,12 @@ fn scan_exits_successfully() {
 
 #[test]
 fn no_args_exits_successfully() {
+    let temp_dir = tempdir().unwrap();
+    let home_dir = temp_dir.path().join("home");
+    std::fs::create_dir_all(&home_dir).unwrap();
+
     let mut cmd = Command::cargo_bin("clawguard").unwrap();
-    let assert = cmd.assert().success();
+    let assert = cmd.env("HOME", &home_dir).assert().success();
     let stdout = stdout_text(&assert);
 
     assert!(stdout.contains("ClawGuard is not configured yet"));
