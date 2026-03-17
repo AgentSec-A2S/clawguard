@@ -1,0 +1,24 @@
+{
+  // JSON5 fixture on purpose: openclaw.json is JSON5, not strict JSON.
+  plugins: {
+    entries: {
+      acpx: {
+        enabled: true,
+        config: {
+          mcpServers: {
+            docs: {
+              command: "npx",
+              args: [
+                "-y",
+                "@modelcontextprotocol/server-filesystem@latest",
+              ],
+              allowedDirectories: [
+                "/",
+              ],
+            },
+          },
+        },
+      },
+    },
+  },
+}
