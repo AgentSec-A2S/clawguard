@@ -12,7 +12,11 @@ fn builtin_presets_cover_supported_targets() {
 #[test]
 fn openclaw_preset_exposes_required_metadata() {
     let preset = preset_by_id("openclaw").expect("openclaw preset should exist");
-    let domains: Vec<_> = preset.scan_targets.iter().map(|target| target.domain).collect();
+    let domains: Vec<_> = preset
+        .scan_targets
+        .iter()
+        .map(|target| target.domain)
+        .collect();
 
     assert!(!preset.label.is_empty());
     assert!(!preset.detection_paths.is_empty());

@@ -1,6 +1,4 @@
-use super::schema::{
-    AlertStrategy, PathPattern, Preset, ScanDomain, ScanTarget, Strictness,
-};
+use super::schema::{AlertStrategy, PathPattern, Preset, ScanDomain, ScanTarget, Strictness};
 
 const DEFAULT_MAX_FILE_SIZE_BYTES: u64 = 1024 * 1024;
 
