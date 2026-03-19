@@ -133,6 +133,11 @@ fn findings_for_openclaw_config(path: &str, raw: &Value) -> Vec<Finding> {
         }
     }
 
+    findings.extend(findings_for_channel_policies(path, root, &global_host));
+    findings.extend(findings_for_gateway_bind(path, root));
+    findings.extend(findings_for_plugin_hooks(path, root));
+    findings.extend(findings_for_webhook_token(path, root));
+
     let Some(agent_list) = root
         .get("agents")
         .and_then(Value::as_object)
@@ -193,6 +198,135 @@ fn findings_for_openclaw_config(path: &str, raw: &Value) -> Vec<Finding> {
     }
 
     findings
+}
+
+fn findings_for_channel_policies(
+    path: &str,
+    root: &Map<String, Value>,
+    global_host: &str,
+) -> Vec<Finding> {
+    let Some(channels) = object_field(root, "channels") else {
+        return Vec::new();
+    };
+
+    let mut channel_names: Vec<_> = channels.keys().cloned().collect();
+    channel_names.sort();
+
+    let mut findings = Vec::new();
+
+    for channel_name in channel_names {
+        let Some(channel) = channels.get(&channel_name).and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(dm_policy) = string_field(channel, "dmPolicy").map(normalize_lower) else {
+            continue;
+        };
+
+        if dm_policy != "open" {
+            continue;
+        }
+
+        findings.push(build_config_finding(
+            path,
+            "open-dm-policy",
+            &format!("channels.{channel_name}"),
+            inbound_dm_severity(global_host),
+            Some(format!("channels.{channel_name}.dmPolicy=open")),
+            "This channel accepts direct messages from anyone, which increases the chance that untrusted prompts can reach host-exec paths.",
+            "Restrict inbound DM exposure before accepting remote commands",
+        ));
+    }
+
+    findings
+}
+
+fn findings_for_gateway_bind(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let Some(gateway) = object_field(root, "gateway") else {
+        return Vec::new();
+    };
+    let Some(bind) = string_field(gateway, "bind") else {
+        return Vec::new();
+    };
+
+    let bind = bind.trim().to_string();
+    if bind.is_empty() || is_loopback_bind(&bind) {
+        return Vec::new();
+    }
+
+    vec![build_config_finding(
+        path,
+        "gateway-bind-exposed",
+        "gateway",
+        Severity::Medium,
+        Some(format!("gateway.bind={bind}")),
+        "This gateway bind value exposes OpenClaw endpoints beyond loopback, which expands remote attack surface.",
+        "Bind the gateway to loopback before exposing OpenClaw endpoints",
+    )]
+}
+
+fn findings_for_plugin_hooks(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let Some(plugin_entries) =
+        object_field(root, "plugins").and_then(|plugins| object_field(plugins, "entries"))
+    else {
+        return Vec::new();
+    };
+
+    let mut entry_ids: Vec<_> = plugin_entries.keys().cloned().collect();
+    entry_ids.sort();
+
+    let mut findings = Vec::new();
+
+    for entry_id in entry_ids {
+        let Some(entry) = plugin_entries.get(&entry_id).and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(hooks) = object_field(entry, "hooks") else {
+            continue;
+        };
+
+        if bool_field(hooks, "allowPromptInjection").unwrap_or(false) {
+            findings.push(build_config_finding(
+                path,
+                "plugin-hook-prompt-injection",
+                &format!("plugins.entries.{entry_id}.hooks"),
+                Severity::High,
+                Some(format!(
+                    "plugins.entries.{entry_id}.hooks.allowPromptInjection=true"
+                )),
+                "This plugin explicitly allows prompt injection into hook execution, which weakens prompt-boundary trust.",
+                "Disable plugin prompt injection before enabling untrusted hooks",
+            ));
+        }
+    }
+
+    findings
+}
+
+fn findings_for_webhook_token(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let Some(hooks) = object_field(root, "hooks") else {
+        return Vec::new();
+    };
+    if bool_field(hooks, "enabled") == Some(false) {
+        return Vec::new();
+    }
+
+    let token_evidence = match hooks.get("token") {
+        Some(Value::String(token)) if !token.trim().is_empty() => None,
+        Some(Value::String(_)) => Some("hooks.token=<empty>".to_string()),
+        _ => Some("hooks.token=<missing>".to_string()),
+    };
+
+    token_evidence.map_or_else(Vec::new, |evidence| {
+        vec![build_config_finding(
+            path,
+            "webhook-token-missing",
+            "hooks",
+            Severity::High,
+            Some(evidence),
+            "This hooks configuration does not set a usable token, which weakens authentication on inbound OpenClaw hook endpoints.",
+            "Set a webhook token before exposing OpenClaw hook endpoints",
+        )]
+    })
 }
 
 fn findings_for_exec_approvals(path: &str, raw: &Value) -> Vec<Finding> {
@@ -430,6 +564,27 @@ fn agent_scope(agent: &Map<String, Value>, index: usize) -> String {
 fn is_dangerous_network_mode(value: &str) -> bool {
     let normalized = normalize_lower(value);
     normalized == "host" || normalized.starts_with("container:")
+}
+
+fn inbound_dm_severity(exec_host: &str) -> Severity {
+    if normalize_lower(exec_host) == "node" {
+        Severity::Critical
+    } else {
+        Severity::High
+    }
+}
+
+fn is_loopback_bind(value: &str) -> bool {
+    let normalized = normalize_lower(value);
+    normalized == "loopback"
+        || normalized == "localhost"
+        || normalized.starts_with("localhost:")
+        || normalized == "127.0.0.1"
+        || normalized.starts_with("127.0.0.1:")
+        || normalized == "::1"
+        || normalized.starts_with("::1:")
+        || normalized == "[::1]"
+        || normalized.starts_with("[::1]:")
 }
 
 fn object_field<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a Map<String, Value>> {

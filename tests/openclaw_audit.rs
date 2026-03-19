@@ -241,6 +241,298 @@ fn malformed_openclaw_state_file_does_not_panic() {
 }
 
 #[test]
+fn dm_policy_open_is_flagged() {
+    let (_temp_dir, config_path) = materialize_openclaw_config(
+        r#"
+        {
+          channels: {
+            telegram: {
+              dmPolicy: "open",
+            },
+          },
+          tools: {
+            exec: {
+              host: "gateway",
+            },
+          },
+        }
+        "#,
+    );
+
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(&output.findings, "channels.telegram.dmPolicy=open");
+
+    assert_eq!(finding.detector_id, "openclaw-config");
+    assert_eq!(finding.category, FindingCategory::Config);
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(
+        finding.recommended_action.label,
+        "Restrict inbound DM exposure before accepting remote commands"
+    );
+}
+
+#[test]
+fn dm_policy_open_with_node_exec_is_critical() {
+    let (_temp_dir, config_path) = materialize_openclaw_config(
+        r#"
+        {
+          channels: {
+            telegram: {
+              dmPolicy: "open",
+            },
+          },
+          tools: {
+            exec: {
+              host: "node",
+            },
+          },
+        }
+        "#,
+    );
+
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(&output.findings, "channels.telegram.dmPolicy=open");
+
+    assert_eq!(finding.severity, Severity::Critical);
+    assert_eq!(
+        finding.recommended_action.label,
+        "Restrict inbound DM exposure before accepting remote commands"
+    );
+}
+
+#[test]
+fn gateway_bind_lan_is_flagged() {
+    let (_temp_dir, config_path) = materialize_openclaw_config(
+        r#"
+        {
+          gateway: {
+            bind: "lan",
+          },
+        }
+        "#,
+    );
+
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(&output.findings, "gateway.bind=lan");
+
+    assert_eq!(finding.detector_id, "openclaw-config");
+    assert_eq!(finding.category, FindingCategory::Config);
+    assert_eq!(finding.severity, Severity::Medium);
+    assert_eq!(
+        finding.recommended_action.label,
+        "Bind the gateway to loopback before exposing OpenClaw endpoints"
+    );
+}
+
+#[test]
+fn gateway_bind_wildcard_addresses_are_flagged() {
+    for bind in ["0.0.0.0", "[::]:18789"] {
+        let (_temp_dir, config_path) = materialize_openclaw_config(&format!(
+            r#"
+            {{
+              gateway: {{
+                bind: "{bind}",
+              }}
+            }}
+            "#
+        ));
+
+        let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+        let finding = finding_with_evidence(&output.findings, &format!("gateway.bind={bind}"));
+
+        assert_eq!(finding.detector_id, "openclaw-config");
+        assert_eq!(finding.category, FindingCategory::Config);
+        assert_eq!(finding.severity, Severity::Medium);
+        assert_eq!(
+            finding.recommended_action.label,
+            "Bind the gateway to loopback before exposing OpenClaw endpoints"
+        );
+    }
+}
+
+#[test]
+fn prompt_injection_enabled_plugin_hook_is_flagged() {
+    let (_temp_dir, config_path) = materialize_openclaw_config(
+        r#"
+        {
+          plugins: {
+            entries: {
+              "soul-evil": {
+                hooks: {
+                  allowPromptInjection: true,
+                },
+              },
+            },
+          },
+        }
+        "#,
+    );
+
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "plugins.entries.soul-evil.hooks.allowPromptInjection=true",
+    );
+
+    assert_eq!(finding.detector_id, "openclaw-config");
+    assert_eq!(finding.category, FindingCategory::Config);
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(
+        finding.recommended_action.label,
+        "Disable plugin prompt injection before enabling untrusted hooks"
+    );
+}
+
+#[test]
+fn missing_webhook_token_is_flagged() {
+    let (_temp_dir, config_path) = materialize_openclaw_config(
+        r#"
+        {
+          hooks: {
+            enabled: true,
+          },
+        }
+        "#,
+    );
+
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(&output.findings, "hooks.token=<missing>");
+
+    assert_eq!(finding.detector_id, "openclaw-config");
+    assert_eq!(finding.category, FindingCategory::Config);
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(
+        finding.recommended_action.label,
+        "Set a webhook token before exposing OpenClaw hook endpoints"
+    );
+}
+
+#[test]
+fn empty_webhook_token_is_flagged() {
+    let (_temp_dir, config_path) = materialize_openclaw_config(
+        r#"
+        {
+          hooks: {
+            enabled: true,
+            token: "   ",
+          },
+        }
+        "#,
+    );
+
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(&output.findings, "hooks.token=<empty>");
+
+    assert_eq!(finding.detector_id, "openclaw-config");
+    assert_eq!(finding.category, FindingCategory::Config);
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(
+        finding.recommended_action.label,
+        "Set a webhook token before exposing OpenClaw hook endpoints"
+    );
+}
+
+#[test]
+fn disabled_webhook_config_without_token_is_not_flagged() {
+    let (_temp_dir, config_path) = materialize_openclaw_config(
+        r#"
+        {
+          hooks: {
+            enabled: false,
+          },
+        }
+        "#,
+    );
+
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+
+    assert!(!output
+        .findings
+        .iter()
+        .any(|finding| finding.id.contains("webhook-token-missing")));
+}
+
+#[test]
+fn webhook_config_without_enabled_flag_still_requires_token() {
+    let (_temp_dir, config_path) = materialize_openclaw_config(
+        r#"
+        {
+          hooks: {}
+        }
+        "#,
+    );
+
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(&output.findings, "hooks.token=<missing>");
+
+    assert_eq!(finding.detector_id, "openclaw-config");
+    assert_eq!(finding.category, FindingCategory::Config);
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(
+        finding.recommended_action.label,
+        "Set a webhook token before exposing OpenClaw hook endpoints"
+    );
+}
+
+#[test]
+fn node_exec_host_is_higher_risk_than_gateway() {
+    let (_gateway_temp_dir, gateway_path) = materialize_openclaw_config(
+        r#"
+        {
+          channels: {
+            telegram: {
+              dmPolicy: "open",
+            },
+          },
+          tools: {
+            exec: {
+              host: "gateway",
+            },
+          },
+        }
+        "#,
+    );
+    let (_node_temp_dir, node_path) = materialize_openclaw_config(
+        r#"
+        {
+          channels: {
+            telegram: {
+              dmPolicy: "open",
+            },
+          },
+          tools: {
+            exec: {
+              host: "node",
+            },
+          },
+        }
+        "#,
+    );
+
+    let gateway_output = scan_openclaw_state(&[gateway_path], 1024 * 1024);
+    let node_output = scan_openclaw_state(&[node_path], 1024 * 1024);
+    let gateway_finding =
+        finding_with_evidence(&gateway_output.findings, "channels.telegram.dmPolicy=open");
+    let node_finding =
+        finding_with_evidence(&node_output.findings, "channels.telegram.dmPolicy=open");
+
+    assert_eq!(gateway_finding.detector_id, "openclaw-config");
+    assert_eq!(node_finding.detector_id, "openclaw-config");
+    assert_eq!(gateway_finding.category, FindingCategory::Config);
+    assert_eq!(node_finding.category, FindingCategory::Config);
+    assert_eq!(gateway_finding.severity, Severity::High);
+    assert_eq!(node_finding.severity, Severity::Critical);
+    assert_eq!(
+        gateway_finding.recommended_action.label,
+        "Restrict inbound DM exposure before accepting remote commands"
+    );
+    assert_eq!(
+        node_finding.recommended_action.label,
+        "Restrict inbound DM exposure before accepting remote commands"
+    );
+}
+
+#[test]
 fn safe_openclaw_state_produces_no_findings() {
     let temp_dir = tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("openclaw.json");
@@ -357,6 +649,14 @@ fn materialize_fixture(source_name: &str, target_name: &str) -> (TempDir, PathBu
     let contents =
         fs::read_to_string(fixture_path(source_name)).expect("fixture contents should be read");
     fs::write(&target_path, contents).expect("fixture contents should be written");
+    set_mode(&target_path, 0o600);
+    (temp_dir, target_path)
+}
+
+fn materialize_openclaw_config(contents: &str) -> (TempDir, PathBuf) {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let target_path = temp_dir.path().join("openclaw.json");
+    fs::write(&target_path, contents).expect("openclaw config should be written");
     set_mode(&target_path, 0o600);
     (temp_dir, target_path)
 }
