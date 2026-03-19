@@ -203,6 +203,35 @@ fn embedded_advisory_feed_matches_fixture_version() {
 }
 
 #[test]
+fn modern_openclaw_advisory_feed_schema_is_supported() {
+    let feed = r#"
+        {
+          "advisories": [
+            {
+              "id": "CVE-2026-25253",
+              "title": "1-Click Remote Code Execution (RCE)",
+              "severity": "Critical",
+              "description": "Query-string-controlled gateway URL enabled token theft and RCE.",
+              "affected_versions": "< 2026.3.20",
+              "fixed_version": "2026.3.20",
+              "references": [
+                "https://example.com/advisories/CVE-2026-25253"
+              ]
+            }
+          ]
+        }
+    "#;
+
+    let findings =
+        scan_openclaw_advisories_from_feed(&[package_fixture_path()], feed, 1024 * 1024);
+    let finding = finding_with_id_fragment(&findings, "CVE-2026-25253");
+
+    assert_eq!(finding.category, FindingCategory::Advisory);
+    assert_eq!(finding.severity, Severity::Critical);
+    assert_eq!(finding.evidence.as_deref(), Some("openclaw@2026.3.14"));
+}
+
+#[test]
 fn bundled_advisory_feed_does_not_ship_example_matches() {
     let feed = fs::read_to_string(Path::new("advisories/openclaw.json"))
         .expect("bundled advisory feed should read");

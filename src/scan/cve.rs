@@ -15,11 +15,17 @@ struct AdvisoryFeed {
 #[derive(Debug, Deserialize)]
 struct AdvisoryEntry {
     id: String,
+    #[serde(default = "default_openclaw_package")]
     package: String,
+    #[serde(alias = "affected_versions")]
     affected: String,
     severity: String,
+    #[serde(default, alias = "title")]
     summary: String,
+    #[serde(default)]
     recommendation: String,
+    #[serde(default)]
+    fixed_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,11 +195,13 @@ fn build_advisory_finding(package: &PackageEvidence, advisory: &AdvisoryEntry) -
         evidence: Some(format!("{}@{}", package.package, package.version_text)),
         plain_english_explanation: format!(
             "{} matches advisory {} ({})",
-            package.package, advisory.id, advisory.summary
+            package.package,
+            advisory.id,
+            advisory_summary(advisory)
         ),
         recommended_action: RecommendedAction {
             label: "Upgrade OpenClaw to a non-vulnerable version".to_string(),
-            command_hint: Some(advisory.recommendation.clone()),
+            command_hint: Some(advisory_recommendation(advisory)),
         },
         fixability: Fixability::Manual,
         fix: None,
@@ -228,6 +236,33 @@ fn severity_from_advisory(value: &str) -> Severity {
         "low" => Severity::Low,
         _ => Severity::Info,
     }
+}
+
+fn default_openclaw_package() -> String {
+    "openclaw".to_string()
+}
+
+fn advisory_summary(advisory: &AdvisoryEntry) -> &str {
+    if advisory.summary.trim().is_empty() {
+        "OpenClaw advisory"
+    } else {
+        advisory.summary.trim()
+    }
+}
+
+fn advisory_recommendation(advisory: &AdvisoryEntry) -> String {
+    if !advisory.recommendation.trim().is_empty() {
+        return advisory.recommendation.trim().to_string();
+    }
+
+    if let Some(fixed_version) = advisory.fixed_version.as_deref() {
+        let fixed_version = fixed_version.trim();
+        if !fixed_version.is_empty() {
+            return format!("Upgrade to {fixed_version} or later");
+        }
+    }
+
+    "Review the advisory and upgrade OpenClaw".to_string()
 }
 
 fn resolved_path_string(path: &Path) -> String {
