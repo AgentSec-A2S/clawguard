@@ -2,13 +2,13 @@
 
 ClawGuard is a host-side integrity guardian for OpenClaw.
 
-It helps you answer one narrow question before you trust a local OpenClaw install:
+It exists to give you a fast, opinionated answer before you trust a local agent runtime:
 
 `Does this machine's OpenClaw state still look safe enough to use?`
 
 ClawGuard is intentionally not a new runtime, not a sandbox, and not a general-purpose EDR.
-It focuses on local integrity, risky configuration drift, dangerous extensions, and other
-high-signal issues that can make an otherwise normal OpenClaw setup unsafe.
+It stays focused on local integrity, risky configuration drift, dangerous extensions, and a
+small set of high-signal checks that can make an otherwise normal OpenClaw setup unsafe.
 
 ## Why ClawGuard Exists
 
@@ -32,16 +32,38 @@ ClawGuard exists to give you an action-oriented answer:
 
 ## Current Features
 
-- OpenClaw-first runtime discovery from the expected local state layout
+- OpenClaw-first runtime discovery from the expected local state layout, including symlinked `~/.openclaw` homes
 - First-run setup that immediately scans the detected runtime instead of stopping at wizard completion
 - Action-first findings UI for terminal use
 - Shared structured findings model for both human output and `--json`
-- OpenClaw config audit for risky exec-approval and sandbox posture
+- OpenClaw config audit for:
+  - risky exec-approval posture
+  - sandbox-off plus host-fallback behavior
+  - dangerous sandbox network modes
+  - exposed `gateway.bind` settings
+  - `channels.*.dmPolicy="open"` inbound exposure
+  - risky hook/plugin settings such as missing webhook tokens and `allowPromptInjection=true`
+  - weak local permissions on sensitive OpenClaw files
 - Skill scanning for dangerous shell, network, and install behaviors
 - MCP scanning for suspicious launchers, unpinned package references, and overly broad directories
 - Secrets and env scanning for literal secrets and private-key material
-- Advisory/version matching when readable version evidence exists
-- Conservative V0 scope: no auto-remediation, no daemon, no hidden mutation of OpenClaw state
+- Advisory/version matching when readable version evidence exists, including a bounded fallback to common source-layout manifests such as `packages/core/package.json`
+- Conservative scope: no auto-remediation, no daemon loop, no hidden mutation of OpenClaw state
+
+## What It Checks Today
+
+ClawGuard keeps the detector catalog intentionally small and high-signal.
+
+- `OpenClaw config audit`
+  - looks for dangerous local runtime posture in `openclaw.json`, `exec-approvals.json`, and auth-profile state
+- `Skills scan`
+  - looks for shell, network, and local-install behaviors that deserve human review
+- `MCP scan`
+  - looks for suspicious auto-install launchers, unpinned packages, and wide filesystem reach
+- `Secrets and env scan`
+  - looks for hardcoded secrets, token-like literals, and PEM / SSH private-key material
+- `Advisory matching`
+  - matches local OpenClaw version evidence against the bundled advisory feed when version evidence is available
 
 ## How It Works
 
@@ -137,11 +159,14 @@ The terminal UI and `--json` output are both generated from the same underlying 
 
 ## Current V0 Scope And Limits
 
-- V0 is OpenClaw-first; it is not a multi-runtime product yet
-- V0 is a CLI scanner, not a daemon or background monitor
+- V0.5 is OpenClaw-first; it is not a multi-runtime product yet
+- V0.5 is a CLI scanner, not a daemon or background monitor
 - ClawGuard does not silently change OpenClaw state
 - The bundled advisory feed is intentionally empty until curated production advisories are shipped
-- Advisory matching only runs when ClawGuard can read a colocated OpenClaw `package.json` for version evidence
+- Advisory matching only runs when ClawGuard can read OpenClaw version evidence
+  - today that means a colocated `package.json` or a bounded fallback such as `packages/core/package.json`
+- `dmPolicy=open` severity is currently derived from global exec-host posture only
+  - ClawGuard does not yet correlate per-agent exec-host overrides back to channel-level DM exposure
 - V0 exit codes
   - scan commands currently exit `0` even when findings are present
   - automation should inspect `--json` output rather than rely on exit status alone

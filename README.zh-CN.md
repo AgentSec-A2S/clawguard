@@ -1,0 +1,188 @@
+# ClawGuard
+
+ClawGuard 是一个面向 OpenClaw 的宿主机侧完整性守护工具。
+
+它要回答的问题很简单，也很实际：
+
+`在真正信任这台机器上的 OpenClaw 之前，它当前的本地状态看起来还安全吗？`
+
+ClawGuard 不是新的 runtime，不是沙箱，也不是通用型 EDR。它只聚焦在少量高信号问题上：
+
+- 本地配置是否被放宽到危险状态
+- 关键状态文件是否存在明显风险
+- 扩展、技能、MCP、密钥等本地攻击面是否已经变得不安全
+
+## 为什么需要 ClawGuard
+
+OpenClaw 最敏感的安全面很多都不在“模型”里，而在宿主机本地：
+
+- `~/.openclaw/openclaw.json`
+- `~/.openclaw/exec-approvals.json`
+- `~/.openclaw/.env`
+- `~/.openclaw/agents/*/agent/auth-profiles.json`
+- `~/.openclaw/skills/`
+- 嵌在 OpenClaw 配置里的 MCP 启动器定义
+
+运行时隔离可以降低爆炸半径，但它并不能告诉你：
+
+- 这套本地配置是不是已经被削弱了
+- 有没有出现危险漂移
+- 有没有明显的高风险扩展面已经打开
+
+ClawGuard 的目标不是“什么都做”，而是尽快给出一个可操作的判断：
+
+- 第一次使用前：这套安装现在看起来是不是明显危险
+- 改动之后：有没有重要状态发生了不该有的漂移
+- 排障时：到底哪条证据最重要，严重度是什么，下一步该做什么
+
+## 当前能力
+
+- OpenClaw-first 的本地发现逻辑，支持常见状态目录布局，也覆盖 symlink 形式的 `~/.openclaw`
+- 首次运行时自动发现 OpenClaw，完成最小化设置后立即执行扫描
+- 面向终端的 findings-first 交互体验
+- 人类可读输出和 `--json` 都来自同一套结构化 finding 模型
+- OpenClaw 配置审计，覆盖：
+  - 危险的 exec approval 配置
+  - sandbox 关闭后仍走 host fallback 的情形
+  - 危险的 sandbox network 模式
+  - 暴露式 `gateway.bind`
+  - `channels.*.dmPolicy="open"` 带来的外部直达风险
+  - webhook token 缺失、插件 `allowPromptInjection=true` 等 hook / plugin 风险
+  - 敏感本地文件权限过宽
+- Skills 扫描，识别高风险 shell / network / install 行为
+- MCP 扫描，识别可疑启动器、未固定版本依赖、过宽目录授权
+- Secrets / env 扫描，识别硬编码 secret、token-like literal、PEM / SSH 私钥内容
+- Advisory 匹配：当存在 OpenClaw 版本证据时，用本地 advisory feed 做版本区间匹配
+  - 当前也支持一个受限 fallback，例如 `packages/core/package.json`
+
+## 现在会检查什么
+
+ClawGuard 故意把 detector catalog 控制得很小，只保留高信号项。
+
+- `OpenClaw config audit`
+  - 检查本地 runtime posture 是否明显危险
+- `Skills scan`
+  - 检查技能目录里是否存在值得人工复核的危险行为
+- `MCP scan`
+  - 检查 MCP 启动链是否有高风险安装与目录暴露模式
+- `Secrets and env scan`
+  - 检查是否直接落地了敏感密钥和私钥材料
+- `Advisory matching`
+  - 当能读到版本证据时，将本地版本与 advisory feed 做离线匹配
+
+## 工作方式
+
+从高层看，ClawGuard 的流水线是：
+
+```text
+preset
+  -> discovery
+  -> evidence collection
+  -> source-context annotation
+  -> detectors
+  -> finding aggregation
+  -> renderers
+```
+
+实际运行时大致分成六步：
+
+1. `Discovery`
+   按 OpenClaw 已知本地布局和固定锚点发现运行时。
+2. `Setup`
+   首次运行时写入 ClawGuard 自己的配置，并保持设置面尽量窄。
+3. `Evidence collection`
+   读取本地 OpenClaw 状态，例如配置、exec approvals、auth profiles、skills、`.env` 等。
+4. `Detectors`
+   用一组边界清晰的小检测器运行，而不是堆一个泛化规则大杂烩。
+5. `Finding aggregation`
+   把结果统一折叠进共享 finding 模型，带上严重度、证据、解释和建议动作。
+6. `Rendering`
+   将同一份结构化结果渲染成终端输出或机器可读 JSON。
+
+## ClawGuard 不是什么
+
+- 不是 OpenClaw 的替代 runtime
+- 不是沙箱或网络策略引擎
+- 不是通用宿主机监控产品
+- 不是深度多智能体分析平台
+- 不是 V0.5 阶段的自动修复系统
+
+## 安装
+
+在 `clawguard/` 目录下执行：
+
+```bash
+source ~/.cargo/env
+cargo install --path .
+```
+
+本地开发也可以直接构建 release 二进制：
+
+```bash
+source ~/.cargo/env
+cargo build --release
+./target/release/clawguard --help
+```
+
+## 首次运行与常用命令
+
+- `clawguard`
+  - 首次运行时：发现 OpenClaw，进入向导，保存配置，立即执行扫描并展示 findings
+  - 已配置后：直接执行当前扫描流程并渲染 findings
+- `clawguard scan`
+  - 直接运行扫描流程
+- `clawguard --json` 或 `clawguard scan --json`
+  - 输出结构化 findings JSON
+- `clawguard --no-interactive` 或 `clawguard scan --no-interactive`
+  - 首次运行时接受默认设置，不进行交互
+- 如果没有发现受支持 runtime
+  - 终端输出和 `--json` 都会返回同一条结构化 Info finding，而不是“空成功”
+
+常见示例：
+
+```bash
+clawguard
+clawguard scan
+clawguard scan --json
+clawguard scan --no-interactive --json
+```
+
+## 输出模型
+
+ClawGuard 是 findings-first 的。
+
+每一条 finding 都尽量携带：
+
+- 严重度
+- detector / category
+- runtime confidence
+- 证据路径与可选行号
+- 面向人的 plain-English explanation
+- 推荐动作
+
+终端 UI 和 `--json` 都来自同一份底层结构化结果，而不是从 prose 反向解析。
+
+## 当前范围与限制
+
+- 当前是 `V0.5`，仍然是 OpenClaw-first，不是多 runtime 产品
+- 当前是 CLI 扫描器，不是后台 daemon 或常驻监控器
+- ClawGuard 不会静默修改 OpenClaw 本地状态
+- bundled advisory feed 目前仍然是保守策略，直到正式生产级 feed 就绪
+- advisory 匹配依赖可读的 OpenClaw 版本证据
+  - 当前支持 colocated `package.json`
+  - 也支持受限 fallback，例如 `packages/core/package.json`
+- `dmPolicy=open` 的严重度目前只按全局 `tools.exec.host` 推断
+  - 还不会把 per-agent exec host override 反向关联到 channel 级 DM 暴露
+- 当前退出码仍然是 V0 风格
+  - 即使存在 finding，命令也可能返回 `0`
+  - 自动化集成应优先读取 `--json`
+
+## 开发
+
+在 `clawguard/` 目录下执行：
+
+```bash
+source ~/.cargo/env
+cargo test
+cargo build --release
+```
