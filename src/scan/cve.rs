@@ -50,14 +50,44 @@ pub fn scan_openclaw_advisories(
         )];
     };
 
+    scan_with_feed(
+        package_manifest_paths,
+        &feed,
+        advisory_feed_path,
+        max_file_size_bytes,
+    )
+}
+
+pub fn scan_openclaw_advisories_from_feed(
+    package_manifest_paths: &[PathBuf],
+    advisory_feed_json: &str,
+    max_file_size_bytes: u64,
+) -> Vec<Finding> {
+    let feed: AdvisoryFeed =
+        serde_json::from_str(advisory_feed_json).expect("bundled advisory feed should parse");
+
+    scan_with_feed(
+        package_manifest_paths,
+        &feed,
+        Path::new("advisories/openclaw.json"),
+        max_file_size_bytes,
+    )
+}
+
+fn scan_with_feed(
+    package_manifest_paths: &[PathBuf],
+    feed: &AdvisoryFeed,
+    fallback_path: &Path,
+    max_file_size_bytes: u64,
+) -> Vec<Finding> {
     let packages = load_package_evidence(package_manifest_paths, max_file_size_bytes);
     if packages.is_empty() {
-        let fallback_path = package_manifest_paths
+        let missing_version_path = package_manifest_paths
             .first()
             .map(PathBuf::as_path)
-            .unwrap_or(advisory_feed_path);
+            .unwrap_or(fallback_path);
         return vec![info_finding(
-            fallback_path,
+            missing_version_path,
             "package-version-unavailable",
             "No readable OpenClaw package manifest with a parseable version was found, so advisory matching cannot be trusted.",
             "Provide OpenClaw version evidence before trusting CVE results",

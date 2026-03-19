@@ -240,6 +240,14 @@ fn render_empty_state() -> String {
 }
 
 fn title_for_finding(finding: &Finding) -> &'static str {
+    // V0-only discovery special case. Do not add more ID-prefix title rules here;
+    // widen the finding model if later tasks need richer detector-owned titles.
+    if finding.detector_id == "discovery"
+        && finding.id.starts_with("discovery:runtime-not-detected:")
+    {
+        return "Supported Runtime Not Detected";
+    }
+
     match finding.category {
         FindingCategory::Config => "OpenClaw Configuration Risk",
         FindingCategory::Skills => "Risky Skill Behavior",

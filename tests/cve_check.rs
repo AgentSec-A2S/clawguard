@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use clawguard::scan::cve::scan_openclaw_advisories;
+use clawguard::scan::cve::{scan_openclaw_advisories, scan_openclaw_advisories_from_feed};
 use clawguard::scan::{Finding, FindingCategory, Severity};
 use tempfile::tempdir;
 
@@ -188,6 +188,29 @@ fn multiple_advisories_are_filtered_to_matching_package() {
 
     assert_eq!(findings.len(), 1);
     assert!(findings[0].id.contains("CG-OPENCLAW-2026-0001"));
+}
+
+#[test]
+fn embedded_advisory_feed_matches_fixture_version() {
+    let feed = fs::read_to_string(advisory_fixture_path()).expect("fixture advisory should read");
+
+    let findings =
+        scan_openclaw_advisories_from_feed(&[package_fixture_path()], &feed, 1024 * 1024);
+    let finding = finding_with_id_fragment(&findings, "CG-OPENCLAW-2026-0001");
+
+    assert_eq!(finding.category, FindingCategory::Advisory);
+    assert_eq!(finding.severity, Severity::High);
+}
+
+#[test]
+fn bundled_advisory_feed_does_not_ship_example_matches() {
+    let feed = fs::read_to_string(Path::new("advisories/openclaw.json"))
+        .expect("bundled advisory feed should read");
+
+    let findings =
+        scan_openclaw_advisories_from_feed(&[package_fixture_path()], &feed, 1024 * 1024);
+
+    assert_eq!(findings.len(), 0);
 }
 
 fn advisory_fixture_path() -> PathBuf {
