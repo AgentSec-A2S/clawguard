@@ -148,39 +148,60 @@ fn load_package_evidence(paths: &[PathBuf], max_file_size_bytes: u64) -> Vec<Pac
     let mut evidence = Vec::new();
 
     for path in sorted_paths {
-        let Ok(metadata) = fs::metadata(&path) else {
-            continue;
-        };
-        if !metadata.is_file() || metadata.len() > max_file_size_bytes {
-            continue;
+        for candidate in expand_manifest_candidates(&path) {
+            let Some(package_evidence) = load_package_manifest(&candidate, max_file_size_bytes)
+            else {
+                continue;
+            };
+
+            evidence.push(package_evidence);
+            break;
         }
-
-        let Ok(contents) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(manifest) = serde_json::from_str::<PackageManifest>(&contents) else {
-            continue;
-        };
-
-        let Some(package) = manifest.name.map(|value| value.trim().to_string()) else {
-            continue;
-        };
-        let Some(version_text) = manifest.version.map(|value| value.trim().to_string()) else {
-            continue;
-        };
-        let Ok(version) = Version::parse(&version_text) else {
-            continue;
-        };
-
-        evidence.push(PackageEvidence {
-            path: resolved_path_string(&path),
-            package,
-            version,
-            version_text,
-        });
     }
 
     evidence
+}
+
+fn expand_manifest_candidates(path: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![path.to_path_buf()];
+
+    let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+        return candidates;
+    };
+    if file_name != "package.json" {
+        return candidates;
+    }
+
+    let Some(root) = path.parent() else {
+        return candidates;
+    };
+    let fallback = root.join("packages").join("core").join("package.json");
+    if fallback != path {
+        candidates.push(fallback);
+    }
+
+    candidates
+}
+
+fn load_package_manifest(path: &Path, max_file_size_bytes: u64) -> Option<PackageEvidence> {
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > max_file_size_bytes {
+        return None;
+    }
+
+    let contents = fs::read_to_string(path).ok()?;
+    let manifest = serde_json::from_str::<PackageManifest>(&contents).ok()?;
+
+    let package = manifest.name.map(|value| value.trim().to_string())?;
+    let version_text = manifest.version.map(|value| value.trim().to_string())?;
+    let version = Version::parse(&version_text).ok()?;
+
+    Some(PackageEvidence {
+        path: resolved_path_string(path),
+        package,
+        version,
+        version_text,
+    })
 }
 
 fn build_advisory_finding(package: &PackageEvidence, advisory: &AdvisoryEntry) -> Finding {

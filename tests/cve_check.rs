@@ -117,6 +117,63 @@ fn missing_package_manifest_returns_info_finding() {
 }
 
 #[test]
+fn package_manifest_in_common_subdirectory_is_used_for_advisories() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let root_manifest = temp_dir.path().join("package.json");
+    let fallback_manifest = temp_dir
+        .path()
+        .join("packages")
+        .join("core")
+        .join("package.json");
+    fs::create_dir_all(
+        fallback_manifest
+            .parent()
+            .expect("fallback parent should exist"),
+    )
+    .expect("fallback package dir should be created");
+    write_package_manifest(&fallback_manifest, "openclaw", "2026.3.14");
+
+    let findings =
+        scan_openclaw_advisories(&[root_manifest], &advisory_fixture_path(), 1024 * 1024);
+    let finding = finding_with_id_fragment(&findings, "CG-OPENCLAW-2026-0001");
+    let expected_path = fs::canonicalize(&fallback_manifest)
+        .expect("fallback manifest should canonicalize")
+        .to_string_lossy()
+        .to_string();
+
+    assert_eq!(finding.category, FindingCategory::Advisory);
+    assert_eq!(finding.path, expected_path);
+    assert_eq!(finding.evidence.as_deref(), Some("openclaw@2026.3.14"));
+    assert!(!findings
+        .iter()
+        .any(|finding| finding.id.contains("package-version-unavailable")));
+}
+
+#[test]
+fn advisory_scan_prefers_root_manifest_when_both_root_and_fallback_exist() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let root_manifest = temp_dir.path().join("package.json");
+    let fallback_manifest = temp_dir
+        .path()
+        .join("packages")
+        .join("core")
+        .join("package.json");
+    fs::create_dir_all(
+        fallback_manifest
+            .parent()
+            .expect("fallback parent should exist"),
+    )
+    .expect("fallback package dir should be created");
+    write_package_manifest(&root_manifest, "openclaw", "2026.3.20");
+    write_package_manifest(&fallback_manifest, "openclaw", "2026.3.14");
+
+    let findings =
+        scan_openclaw_advisories(&[root_manifest], &advisory_fixture_path(), 1024 * 1024);
+
+    assert_eq!(findings.len(), 0);
+}
+
+#[test]
 fn only_matching_advisory_is_emitted_for_package_version() {
     let temp_dir = tempdir().expect("temp dir should be created");
     let advisory_path = temp_dir.path().join("openclaw.json");
@@ -222,8 +279,7 @@ fn modern_openclaw_advisory_feed_schema_is_supported() {
         }
     "#;
 
-    let findings =
-        scan_openclaw_advisories_from_feed(&[package_fixture_path()], feed, 1024 * 1024);
+    let findings = scan_openclaw_advisories_from_feed(&[package_fixture_path()], feed, 1024 * 1024);
     let finding = finding_with_id_fragment(&findings, "CVE-2026-25253");
 
     assert_eq!(finding.category, FindingCategory::Advisory);
@@ -262,4 +318,19 @@ fn finding_with_id_fragment<'a>(findings: &'a [Finding], id_fragment: &str) -> &
         .iter()
         .find(|finding| finding.id.contains(id_fragment))
         .unwrap_or_else(|| panic!("expected finding with id fragment: {id_fragment}"))
+}
+
+fn write_package_manifest(path: &Path, name: &str, version: &str) {
+    fs::write(
+        path,
+        format!(
+            r#"
+        {{
+          "name": "{name}",
+          "version": "{version}"
+        }}
+        "#
+        ),
+    )
+    .expect("package manifest should be written");
 }
