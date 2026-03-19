@@ -33,7 +33,11 @@ pub fn config_path() -> PathBuf {
 }
 
 pub fn config_path_for_home(home_dir: &Path) -> PathBuf {
-    home_dir.join(CONFIG_DIR_NAME).join(CONFIG_FILE_NAME)
+    clawguard_dir_for_home(home_dir).join(CONFIG_FILE_NAME)
+}
+
+pub fn clawguard_dir_for_home(home_dir: &Path) -> PathBuf {
+    home_dir.join(CONFIG_DIR_NAME)
 }
 
 pub(crate) fn resolve_home_dir() -> PathBuf {
