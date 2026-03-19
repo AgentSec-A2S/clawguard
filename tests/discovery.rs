@@ -8,6 +8,8 @@ use clawguard::discovery::{
 use tempfile::TempDir;
 
 #[cfg(unix)]
+use std::os::unix::fs::symlink;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
@@ -37,6 +39,44 @@ fn detects_openclaw_from_default_home_layout() {
     );
     assert_eq!(target_paths(&runtime, ScanDomain::Skills), vec![skills_dir]);
     assert_eq!(target_paths(&runtime, ScanDomain::Env), vec![env_path]);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_openclaw_home_is_detected_as_readable_runtime() {
+    let home = TempDir::new().expect("temp home should be created");
+    let real_state_root = TempDir::new().expect("real state root should be created");
+    let state_link = home.path().join(".openclaw");
+    let config_path = real_state_root.path().join("openclaw.json");
+    let env_path = real_state_root.path().join(".env");
+    let skills_dir = real_state_root.path().join("skills");
+
+    fs::create_dir_all(&skills_dir).expect("skills dir should be created");
+    fs::write(&config_path, "{ }\n").expect("config file should be written");
+    fs::write(&env_path, "OPENCLAW_GATEWAY_TOKEN=test\n").expect("env file should be written");
+    symlink(real_state_root.path(), &state_link).expect("state root symlink should be created");
+
+    let runtime = discover_openclaw(&DiscoveryOptions {
+        home_dir: Some(home.path().to_path_buf()),
+        ..DiscoveryOptions::default()
+    })
+    .expect("symlinked openclaw home should be detected");
+
+    assert_eq!(runtime.preset_id, "openclaw");
+    assert_eq!(runtime.root, Some(state_link.clone()));
+    assert!(runtime.recommended);
+    assert_eq!(
+        target_paths(&runtime, ScanDomain::Config),
+        vec![state_link.join("openclaw.json")]
+    );
+    assert_eq!(
+        target_paths(&runtime, ScanDomain::Skills),
+        vec![state_link.join("skills")]
+    );
+    assert_eq!(
+        target_paths(&runtime, ScanDomain::Env),
+        vec![state_link.join(".env")]
+    );
 }
 
 #[test]
