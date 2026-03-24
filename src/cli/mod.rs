@@ -210,6 +210,17 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
         .iter()
         .map(warning_output_from_state)
         .collect();
+    match state.store.list_baselines() {
+        Ok(baselines) if baselines.is_empty() => pending_warning_outputs.push(WarningOutput {
+            path: None,
+            message: "no approved baselines exist yet; run `clawguard baseline approve` before treating drift findings as a trusted delta".to_string(),
+        }),
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("failed to inspect approved baselines: {error}");
+            return ExitCode::FAILURE;
+        }
+    }
     pending_warning_outputs.extend(backend_warnings.iter().map(warning_output_from_watch));
 
     let mut service = WatchService::new(config, DiscoveryOptions::default(), state.store);
@@ -519,7 +530,14 @@ fn baselines_by_source(baselines: &[BaselineRecord]) -> BTreeMap<&str, Vec<Basel
 fn create_cli_watch_backend(
     plan: &crate::daemon::watch::WatchPlan,
 ) -> Result<(Box<dyn WatchBackend>, String, Vec<WatchWarning>), String> {
-    match NotifyWatchBackend::new(plan) {
+    create_cli_watch_backend_from_notify_result(plan, NotifyWatchBackend::new(plan))
+}
+
+fn create_cli_watch_backend_from_notify_result(
+    plan: &crate::daemon::watch::WatchPlan,
+    notify_result: Result<NotifyWatchBackend, crate::daemon::watch::WatchBackendError>,
+) -> Result<(Box<dyn WatchBackend>, String, Vec<WatchWarning>), String> {
+    match notify_result {
         Ok(backend) => Ok((Box::new(backend), "notify".to_string(), Vec::new())),
         Err(error) => Ok((
             Box::new(PollingWatchBackend::new(plan)),
@@ -588,4 +606,41 @@ fn now_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::daemon::watch::{WatchBackendError, WatchKind, WatchPlan, WatchTarget};
+
+    use super::create_cli_watch_backend_from_notify_result;
+
+    #[test]
+    fn cli_watch_backend_falls_back_to_polling_when_notify_creation_fails() {
+        let plan = WatchPlan {
+            targets: vec![WatchTarget {
+                logical_path: PathBuf::from("/tmp/.openclaw/openclaw.json"),
+                watch_root: PathBuf::from("/tmp/.openclaw"),
+                watch_kind: WatchKind::Directory,
+                source_label: "config".to_string(),
+                excluded_subpaths: Vec::new(),
+            }],
+        };
+
+        let (_, backend_label, warnings) = create_cli_watch_backend_from_notify_result(
+            &plan,
+            Err(WatchBackendError::Create(
+                "notify intentionally unavailable for test".to_string(),
+            )),
+        )
+        .expect("fallback backend should be created");
+
+        assert_eq!(backend_label, "polling");
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].message.contains("falling back to polling"),
+            "fallback warning should explain why polling was selected"
+        );
+    }
 }
