@@ -7,7 +7,7 @@ use clawguard::scan::{
 };
 use clawguard::state::db::{StateStore, StateStoreConfig, StateStoreError};
 use clawguard::state::model::{
-    AlertRecord, AlertStatus, BaselineRecord, ScanSnapshot, StateWarningKind,
+    AlertRecord, AlertStatus, BaselineRecord, RestorePayloadRecord, ScanSnapshot, StateWarningKind,
 };
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -95,6 +95,26 @@ fn latest_scan_snapshot_returns_most_recent_when_multiple_exist() {
 }
 
 #[test]
+fn record_scan_snapshot_and_replace_current_findings_updates_both_views() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    let snapshot = sample_snapshot();
+
+    store
+        .record_scan_snapshot_and_replace_current_findings(&snapshot)
+        .expect("combined snapshot/current-finding write should succeed");
+
+    assert_eq!(
+        store.latest_scan_snapshot().unwrap(),
+        Some(snapshot.clone())
+    );
+    assert_eq!(store.list_current_findings().unwrap(), snapshot.findings);
+}
+
+#[test]
 fn replace_current_findings_overwrites_previous_unresolved_view() {
     let temp_dir = tempdir().expect("temp dir should be created");
     let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
@@ -168,6 +188,210 @@ fn baseline_for_path_returns_only_the_requested_record() {
     assert_eq!(
         store.baseline_for_path("/tmp/openclaw.json").unwrap(),
         Some(expected)
+    );
+}
+
+#[test]
+fn replace_baselines_for_source_removes_stale_paths_transactionally() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    store
+        .upsert_baseline(&baseline_record_with_source(
+            "/tmp/openclaw.json",
+            "aaa",
+            "config",
+        ))
+        .expect("config baseline should persist");
+    store
+        .upsert_baseline(&baseline_record_with_source(
+            "/tmp/exec-approvals.json",
+            "bbb",
+            "config",
+        ))
+        .expect("second config baseline should persist");
+    store
+        .upsert_baseline(&baseline_record_with_source(
+            "/tmp/skills/risky/SKILL.md",
+            "ccc",
+            "skills",
+        ))
+        .expect("skills baseline should persist");
+
+    let replacement = vec![baseline_record_with_source(
+        "/tmp/openclaw.json",
+        "updated",
+        "config",
+    )];
+
+    store
+        .replace_baselines_for_source("config", &replacement)
+        .expect("source replacement should succeed");
+
+    let baselines = store.list_baselines().unwrap();
+    assert_eq!(
+        baselines,
+        vec![
+            baseline_record_with_source("/tmp/openclaw.json", "updated", "config"),
+            baseline_record_with_source("/tmp/skills/risky/SKILL.md", "ccc", "skills"),
+        ]
+    );
+}
+
+#[test]
+fn replace_baselines_for_source_rejects_mismatched_source_label() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    let error = store
+        .replace_baselines_for_source(
+            "config",
+            &[baseline_record_with_source(
+                "/tmp/openclaw.json",
+                "aaa",
+                "skills",
+            )],
+        )
+        .expect_err("mismatched source labels should be rejected");
+
+    assert!(matches!(error, StateStoreError::Query { .. }));
+}
+
+#[test]
+fn replace_baselines_for_source_rejects_path_owned_by_other_source() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    store
+        .upsert_baseline(&baseline_record_with_source(
+            "/tmp/openclaw.json",
+            "aaa",
+            "skills",
+        ))
+        .expect("existing skills baseline should persist");
+
+    let error = store
+        .replace_baselines_for_source(
+            "config",
+            &[baseline_record_with_source(
+                "/tmp/openclaw.json",
+                "bbb",
+                "config",
+            )],
+        )
+        .expect_err("cross-source path takeover should be rejected");
+
+    assert!(matches!(error, StateStoreError::Query { .. }));
+    assert_eq!(
+        store.baseline_for_path("/tmp/openclaw.json").unwrap(),
+        Some(baseline_record_with_source(
+            "/tmp/openclaw.json",
+            "aaa",
+            "skills"
+        ))
+    );
+}
+
+#[test]
+fn restore_payload_round_trips_by_path() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    let payload = restore_payload_record("/tmp/openclaw.json", "aaa", "config", "{ agents: {} }");
+
+    store
+        .replace_restore_payloads_for_source("config", std::slice::from_ref(&payload))
+        .expect("restore payload should persist");
+
+    assert_eq!(
+        store
+            .restore_payload_for_path("/tmp/openclaw.json")
+            .unwrap(),
+        Some(payload)
+    );
+}
+
+#[test]
+fn replace_restore_payloads_for_source_removes_stale_entries() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    store
+        .replace_restore_payloads_for_source(
+            "config",
+            &[
+                restore_payload_record("/tmp/openclaw.json", "aaa", "config", "{ one: true }"),
+                restore_payload_record(
+                    "/tmp/exec-approvals.json",
+                    "bbb",
+                    "config",
+                    "{ mode: \"review\" }",
+                ),
+            ],
+        )
+        .expect("initial restore payloads should persist");
+
+    let replacement =
+        restore_payload_record("/tmp/openclaw.json", "updated", "config", "{ two: true }");
+    store
+        .replace_restore_payloads_for_source("config", std::slice::from_ref(&replacement))
+        .expect("replacement payload should succeed");
+
+    assert_eq!(
+        store
+            .restore_payload_for_path("/tmp/openclaw.json")
+            .unwrap(),
+        Some(replacement)
+    );
+    assert_eq!(
+        store
+            .restore_payload_for_path("/tmp/exec-approvals.json")
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn replace_restore_payloads_for_source_rejects_path_owned_by_other_source() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    let existing =
+        restore_payload_record("/tmp/openclaw.json", "aaa", "skills", "{ injected: false }");
+    store
+        .replace_restore_payloads_for_source("skills", std::slice::from_ref(&existing))
+        .expect("existing payload should persist");
+
+    let error = store
+        .replace_restore_payloads_for_source(
+            "config",
+            &[restore_payload_record(
+                "/tmp/openclaw.json",
+                "bbb",
+                "config",
+                "{ agents: {} }",
+            )],
+        )
+        .expect_err("cross-source restore payload takeover should be rejected");
+
+    assert!(matches!(error, StateStoreError::Query { .. }));
+    assert_eq!(
+        store
+            .restore_payload_for_path("/tmp/openclaw.json")
+            .unwrap(),
+        Some(existing)
     );
 }
 
@@ -347,6 +571,13 @@ fn baseline_record(path: &str, sha256: &str) -> BaselineRecord {
     }
 }
 
+fn baseline_record_with_source(path: &str, sha256: &str, source_label: &str) -> BaselineRecord {
+    BaselineRecord {
+        source_label: source_label.to_string(),
+        ..baseline_record(path, sha256)
+    }
+}
+
 fn alert_record(alert_id: &str, finding_id: &str, status: AlertStatus) -> AlertRecord {
     AlertRecord {
         alert_id: alert_id.to_string(),
@@ -354,6 +585,21 @@ fn alert_record(alert_id: &str, finding_id: &str, status: AlertStatus) -> AlertR
         status,
         created_at_unix_ms: 1_763_573_000_000,
         finding: sample_finding(finding_id, Severity::High),
+    }
+}
+
+fn restore_payload_record(
+    path: &str,
+    sha256: &str,
+    source_label: &str,
+    content: &str,
+) -> RestorePayloadRecord {
+    RestorePayloadRecord {
+        path: path.to_string(),
+        sha256: sha256.to_string(),
+        captured_at_unix_ms: 1_763_573_000_000,
+        source_label: source_label.to_string(),
+        content: content.to_string(),
     }
 }
 

@@ -1,3 +1,4 @@
+pub mod baseline;
 pub mod cve;
 pub mod finding;
 pub mod mcp;
@@ -6,6 +7,7 @@ pub mod secrets;
 pub mod severity;
 pub mod skills;
 
+use std::collections::{btree_map::Entry, BTreeMap};
 use std::path::{Path, PathBuf};
 
 use crate::config::presets::preset_by_id;
@@ -36,6 +38,20 @@ pub struct ScanReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanResult {
     findings: Vec<Finding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaselineArtifact {
+    pub path: String,
+    pub sha256: String,
+    pub source_label: String,
+    pub category: FindingCategory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanEvidence {
+    pub result: ScanResult,
+    pub artifacts: Vec<BaselineArtifact>,
 }
 
 impl ScanResult {
@@ -92,6 +108,10 @@ impl ScanResult {
 }
 
 pub fn run_scan(config: &AppConfig, discovery: &DiscoveryReport) -> ScanResult {
+    collect_scan_evidence(config, discovery).result
+}
+
+pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) -> ScanEvidence {
     // V0 is still effectively single-preset. If more presets are added later,
     // tighten this fallback instead of silently scanning a different runtime.
     let Some(runtime) = discovery
@@ -100,7 +120,10 @@ pub fn run_scan(config: &AppConfig, discovery: &DiscoveryReport) -> ScanResult {
         .find(|runtime| runtime.preset_id == config.preset)
         .or_else(|| discovery.runtimes.first())
     else {
-        return ScanResult::from_batches(vec![]);
+        return ScanEvidence {
+            result: ScanResult::from_batches(vec![]),
+            artifacts: Vec::new(),
+        };
     };
 
     let preset = preset_by_id(&runtime.preset_id).or_else(|| preset_by_id(&config.preset));
@@ -110,25 +133,74 @@ pub fn run_scan(config: &AppConfig, discovery: &DiscoveryReport) -> ScanResult {
         .unwrap_or(&[]);
 
     let mut batches = Vec::new();
+    let mut artifacts_by_path = BTreeMap::new();
 
     for target in &runtime.targets {
         match target.domain {
-            ScanDomain::Config => batches.push(
-                openclaw::scan_openclaw_state(&target.paths, config.max_file_size_bytes).findings,
-            ),
-            ScanDomain::Skills => {
-                for path in &target.paths {
-                    batches.push(
-                        skills::scan_skill_dir(path, config.max_file_size_bytes, excluded_dirs)
-                            .findings,
+            ScanDomain::Config => {
+                let output =
+                    openclaw::scan_openclaw_state(&target.paths, config.max_file_size_bytes);
+                batches.push(output.findings);
+                for artifact in output.artifacts {
+                    insert_artifact(
+                        &mut artifacts_by_path,
+                        BaselineArtifact {
+                            path: artifact.path,
+                            sha256: artifact.sha256,
+                            source_label: "config".to_string(),
+                            category: FindingCategory::Config,
+                        },
                     );
                 }
             }
-            ScanDomain::Mcp => batches
-                .push(mcp::scan_mcp_configs(&target.paths, config.max_file_size_bytes).findings),
-            ScanDomain::Env => batches.push(
-                secrets::scan_secret_files(&target.paths, config.max_file_size_bytes).findings,
-            ),
+            ScanDomain::Skills => {
+                for path in &target.paths {
+                    let output =
+                        skills::scan_skill_dir(path, config.max_file_size_bytes, excluded_dirs);
+                    batches.push(output.findings);
+                    for artifact in output.artifacts {
+                        insert_artifact(
+                            &mut artifacts_by_path,
+                            BaselineArtifact {
+                                path: artifact.path,
+                                sha256: artifact.sha256,
+                                source_label: "skills".to_string(),
+                                category: FindingCategory::Skills,
+                            },
+                        );
+                    }
+                }
+            }
+            ScanDomain::Mcp => {
+                let output = mcp::scan_mcp_configs(&target.paths, config.max_file_size_bytes);
+                batches.push(output.findings);
+                for artifact in output.artifacts {
+                    insert_artifact(
+                        &mut artifacts_by_path,
+                        BaselineArtifact {
+                            path: artifact.path,
+                            sha256: artifact.sha256,
+                            source_label: "mcp".to_string(),
+                            category: FindingCategory::Mcp,
+                        },
+                    );
+                }
+            }
+            ScanDomain::Env => {
+                let output = secrets::scan_secret_files(&target.paths, config.max_file_size_bytes);
+                batches.push(output.findings);
+                for artifact in output.artifacts {
+                    insert_artifact(
+                        &mut artifacts_by_path,
+                        BaselineArtifact {
+                            path: artifact.path,
+                            sha256: artifact.sha256,
+                            source_label: "env".to_string(),
+                            category: FindingCategory::Secrets,
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -141,7 +213,31 @@ pub fn run_scan(config: &AppConfig, discovery: &DiscoveryReport) -> ScanResult {
         ));
     }
 
-    ScanResult::from_batches(batches)
+    ScanEvidence {
+        result: ScanResult::from_batches(batches),
+        artifacts: artifacts_by_path.into_values().collect(),
+    }
+}
+
+fn insert_artifact(
+    artifacts_by_path: &mut BTreeMap<String, BaselineArtifact>,
+    artifact: BaselineArtifact,
+) {
+    match artifacts_by_path.entry(artifact.path.clone()) {
+        Entry::Vacant(entry) => {
+            entry.insert(artifact);
+        }
+        Entry::Occupied(existing) => {
+            // Baselines are path-keyed. If multiple detector domains observe the same file,
+            // keep the first canonical owner and assert the file hash agrees.
+            debug_assert_eq!(
+                existing.get().sha256,
+                artifact.sha256,
+                "shared artifact path {} produced conflicting hashes across detector domains",
+                artifact.path
+            );
+        }
+    }
 }
 
 pub fn runtime_not_detected_result(expected_config_path: &Path) -> ScanResult {

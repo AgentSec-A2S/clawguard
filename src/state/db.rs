@@ -4,12 +4,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, Error as SqlError, ErrorCode};
+use rusqlite::{Connection, Error as SqlError, ErrorCode, OptionalExtension};
 
 use crate::scan::Finding;
 
 use super::model::{
-    AlertRecord, AlertStatus, BaselineRecord, ScanSnapshot, StateWarning, StateWarningKind,
+    AlertRecord, AlertStatus, BaselineRecord, RestorePayloadRecord, ScanSnapshot, StateWarning,
+    StateWarningKind,
 };
 
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -145,15 +146,7 @@ impl StateStore {
     }
 
     pub fn record_scan_snapshot(&mut self, snapshot: &ScanSnapshot) -> Result<(), StateStoreError> {
-        let snapshot_json =
-            serde_json::to_string(snapshot).map_err(|error| StateStoreError::Serialize {
-                message: format!("failed to serialize snapshot: {error}"),
-            })?;
-        let summary_json = serde_json::to_string(&snapshot.summary).map_err(|error| {
-            StateStoreError::Serialize {
-                message: format!("failed to serialize snapshot summary: {error}"),
-            }
-        })?;
+        let (snapshot_json, summary_json) = serialize_snapshot(snapshot)?;
 
         self.run_write_with_retry(|conn| {
             conn.execute(
@@ -174,20 +167,44 @@ impl StateStore {
         &mut self,
         findings: &[Finding],
     ) -> Result<(), StateStoreError> {
-        let serialized_findings: Vec<_> = findings
-            .iter()
-            .enumerate()
-            .map(|(position, finding)| {
-                serde_json::to_string(finding)
-                    .map(|finding_json| (position as i64, finding.id.clone(), finding_json))
-                    .map_err(|error| StateStoreError::Serialize {
-                        message: format!("failed to serialize current finding: {error}"),
-                    })
-            })
-            .collect::<Result<_, _>>()?;
+        let serialized_findings = serialize_current_findings(findings)?;
 
         self.run_write_with_retry(|conn| {
             let transaction = conn.unchecked_transaction()?;
+            transaction.execute("DELETE FROM current_findings", [])?;
+
+            for (position, finding_id, finding_json) in &serialized_findings {
+                transaction.execute(
+                    "INSERT INTO current_findings (position, finding_id, finding_json)
+                     VALUES (?1, ?2, ?3)",
+                    (position, finding_id, finding_json),
+                )?;
+            }
+
+            transaction.commit()?;
+
+            Ok(())
+        })
+    }
+
+    pub fn record_scan_snapshot_and_replace_current_findings(
+        &mut self,
+        snapshot: &ScanSnapshot,
+    ) -> Result<(), StateStoreError> {
+        let (snapshot_json, summary_json) = serialize_snapshot(snapshot)?;
+        let serialized_findings = serialize_current_findings(&snapshot.findings)?;
+
+        self.run_write_with_retry(|conn| {
+            let transaction = conn.unchecked_transaction()?;
+            transaction.execute(
+                "INSERT INTO scan_snapshots (recorded_at_unix_ms, summary_json, snapshot_json)
+                 VALUES (?1, ?2, ?3)",
+                (
+                    snapshot.recorded_at_unix_ms as i64,
+                    &summary_json,
+                    &snapshot_json,
+                ),
+            )?;
             transaction.execute("DELETE FROM current_findings", [])?;
 
             for (position, finding_id, finding_json) in &serialized_findings {
@@ -245,6 +262,74 @@ impl StateStore {
         })
     }
 
+    pub fn replace_baselines_for_source(
+        &mut self,
+        source_label: &str,
+        baselines: &[BaselineRecord],
+    ) -> Result<(), StateStoreError> {
+        for baseline in baselines {
+            if baseline.source_label != source_label {
+                return Err(StateStoreError::Query {
+                    message: format!(
+                        "baseline source_label mismatch for path {}: expected {source_label}, found {}",
+                        baseline.path, baseline.source_label
+                    ),
+                });
+            }
+        }
+
+        self.run_write_with_retry(|conn| {
+            let transaction = conn.unchecked_transaction()?;
+
+            for baseline in baselines {
+                let existing_source_label: Option<String> = transaction
+                    .query_row(
+                        "SELECT source_label FROM baselines WHERE path = ?1",
+                        [&baseline.path],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+
+                if let Some(existing_source_label) = existing_source_label {
+                    if existing_source_label != source_label {
+                        return Err(StateStoreError::Query {
+                            message: format!(
+                                "baseline path {} is already owned by source {}",
+                                baseline.path, existing_source_label
+                            ),
+                        });
+                    }
+                }
+            }
+
+            transaction.execute(
+                "DELETE FROM baselines WHERE source_label = ?1",
+                [source_label],
+            )?;
+
+            for baseline in baselines {
+                transaction.execute(
+                    "INSERT INTO baselines (path, sha256, approved_at_unix_ms, source_label)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(path) DO UPDATE SET
+                         sha256 = excluded.sha256,
+                         approved_at_unix_ms = excluded.approved_at_unix_ms,
+                         source_label = excluded.source_label",
+                    (
+                        &baseline.path,
+                        &baseline.sha256,
+                        baseline.approved_at_unix_ms as i64,
+                        &baseline.source_label,
+                    ),
+                )?;
+            }
+
+            transaction.commit()?;
+
+            Ok(())
+        })
+    }
+
     pub fn list_baselines(&self) -> Result<Vec<BaselineRecord>, StateStoreError> {
         let mut statement = self.conn.prepare(
             "SELECT path, sha256, approved_at_unix_ms, source_label
@@ -288,6 +373,100 @@ impl StateStore {
             sha256: row.get(1)?,
             approved_at_unix_ms: row.get::<_, i64>(2)? as u64,
             source_label: row.get(3)?,
+        }))
+    }
+
+    pub fn replace_restore_payloads_for_source(
+        &mut self,
+        source_label: &str,
+        payloads: &[RestorePayloadRecord],
+    ) -> Result<(), StateStoreError> {
+        for payload in payloads {
+            if payload.source_label != source_label {
+                return Err(StateStoreError::Query {
+                    message: format!(
+                        "restore payload source_label mismatch for path {}: expected {source_label}, found {}",
+                        payload.path, payload.source_label
+                    ),
+                });
+            }
+        }
+
+        self.run_write_with_retry(|conn| {
+            let transaction = conn.unchecked_transaction()?;
+
+            for payload in payloads {
+                let existing_source_label: Option<String> = transaction
+                    .query_row(
+                        "SELECT source_label FROM restore_payloads WHERE path = ?1",
+                        [&payload.path],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+
+                if let Some(existing_source_label) = existing_source_label {
+                    if existing_source_label != source_label {
+                        return Err(StateStoreError::Query {
+                            message: format!(
+                                "restore payload path {} is already owned by source {}",
+                                payload.path, existing_source_label
+                            ),
+                        });
+                    }
+                }
+            }
+
+            transaction.execute(
+                "DELETE FROM restore_payloads WHERE source_label = ?1",
+                [source_label],
+            )?;
+
+            for payload in payloads {
+                transaction.execute(
+                    "INSERT INTO restore_payloads (path, sha256, captured_at_unix_ms, source_label, content)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(path) DO UPDATE SET
+                         sha256 = excluded.sha256,
+                         captured_at_unix_ms = excluded.captured_at_unix_ms,
+                         source_label = excluded.source_label,
+                         content = excluded.content",
+                    (
+                        &payload.path,
+                        &payload.sha256,
+                        payload.captured_at_unix_ms as i64,
+                        &payload.source_label,
+                        &payload.content,
+                    ),
+                )?;
+            }
+
+            transaction.commit()?;
+
+            Ok(())
+        })
+    }
+
+    pub fn restore_payload_for_path(
+        &self,
+        requested_path: &str,
+    ) -> Result<Option<RestorePayloadRecord>, StateStoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT path, sha256, captured_at_unix_ms, source_label, content
+             FROM restore_payloads
+             WHERE path = ?1",
+        )?;
+        let mut rows = statement.query([requested_path])?;
+
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+
+        Ok(Some(RestorePayloadRecord {
+            path: row.get(0)?,
+            sha256: row.get(1)?,
+            captured_at_unix_ms: row.get::<_, i64>(2)? as u64,
+            source_label: row.get(3)?,
+            content: row.get(4)?,
         }))
     }
 
@@ -448,6 +627,35 @@ fn open_connection(path: &Path, busy_timeout_ms: u64) -> Result<Connection, Stat
     Ok(conn)
 }
 
+fn serialize_snapshot(snapshot: &ScanSnapshot) -> Result<(String, String), StateStoreError> {
+    let snapshot_json =
+        serde_json::to_string(snapshot).map_err(|error| StateStoreError::Serialize {
+            message: format!("failed to serialize snapshot: {error}"),
+        })?;
+    let summary_json =
+        serde_json::to_string(&snapshot.summary).map_err(|error| StateStoreError::Serialize {
+            message: format!("failed to serialize snapshot summary: {error}"),
+        })?;
+
+    Ok((snapshot_json, summary_json))
+}
+
+fn serialize_current_findings(
+    findings: &[Finding],
+) -> Result<Vec<(i64, String, String)>, StateStoreError> {
+    findings
+        .iter()
+        .enumerate()
+        .map(|(position, finding)| {
+            serde_json::to_string(finding)
+                .map(|finding_json| (position as i64, finding.id.clone(), finding_json))
+                .map_err(|error| StateStoreError::Serialize {
+                    message: format!("failed to serialize current finding: {error}"),
+                })
+        })
+        .collect()
+}
+
 fn configure_connection(conn: &Connection, busy_timeout_ms: u64) -> Result<(), StateStoreError> {
     conn.busy_timeout(Duration::from_millis(busy_timeout_ms))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -486,6 +694,14 @@ fn bootstrap_schema(conn: &Connection) -> Result<(), StateStoreError> {
             sha256 TEXT NOT NULL,
             approved_at_unix_ms INTEGER NOT NULL,
             source_label TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS restore_payloads (
+            path TEXT PRIMARY KEY,
+            sha256 TEXT NOT NULL,
+            captured_at_unix_ms INTEGER NOT NULL,
+            source_label TEXT NOT NULL,
+            content TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS alerts (

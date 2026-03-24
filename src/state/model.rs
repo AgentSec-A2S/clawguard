@@ -31,6 +31,15 @@ pub struct BaselineRecord {
     pub source_label: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestorePayloadRecord {
+    pub path: String,
+    pub sha256: String,
+    pub captured_at_unix_ms: u64,
+    pub source_label: String,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AlertStatus {

@@ -14,6 +14,8 @@ fn help_mentions_product_name() {
 
     assert!(stdout.contains("clawguard"));
     assert!(stdout.contains("scan"));
+    assert!(stdout.contains("baseline"));
+    assert!(stdout.contains("watch"));
 }
 
 #[test]
