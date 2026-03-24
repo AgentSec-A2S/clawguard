@@ -16,6 +16,7 @@ pub struct WizardAnswers {
 pub enum WizardError {
     NoDetectedRuntime,
     UnknownPreset(String),
+    InvalidWebhookConfig(String),
     PromptFailed(String),
     PersistConfig(String),
 }
@@ -25,6 +26,9 @@ impl Display for WizardError {
         match self {
             Self::NoDetectedRuntime => write!(f, "no supported runtime was detected"),
             Self::UnknownPreset(preset) => write!(f, "unknown preset: {preset}"),
+            Self::InvalidWebhookConfig(error) => {
+                write!(f, "invalid webhook configuration: {error}")
+            }
             Self::PromptFailed(error) => write!(f, "wizard prompt failed: {error}"),
             Self::PersistConfig(error) => write!(f, "failed to persist config: {error}"),
         }
@@ -57,11 +61,37 @@ pub fn build_app_config(
 
     let preset = preset_by_id(&preset_id).ok_or_else(|| WizardError::UnknownPreset(preset_id))?;
 
+    let webhook_url =
+        validated_webhook_url(answers.alert_strategy, answers.webhook_url.as_deref())?;
+
     Ok(AppConfig {
         preset: preset.id,
         strictness: answers.strictness,
         alert_strategy: answers.alert_strategy,
-        webhook_url: answers.webhook_url.clone(),
+        webhook_url,
         max_file_size_bytes: preset.max_file_size_bytes,
     })
+}
+
+fn validated_webhook_url(
+    alert_strategy: AlertStrategy,
+    webhook_url: Option<&str>,
+) -> Result<Option<String>, WizardError> {
+    if alert_strategy != AlertStrategy::Webhook {
+        return Ok(None);
+    }
+
+    let Some(url) = webhook_url.map(str::trim).filter(|url| !url.is_empty()) else {
+        return Err(WizardError::InvalidWebhookConfig(
+            "webhook alert strategy requires a configured webhook URL".to_string(),
+        ));
+    };
+
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(WizardError::InvalidWebhookConfig(
+            "webhook_url must start with http:// or https://".to_string(),
+        ));
+    }
+
+    Ok(Some(url.to_string()))
 }

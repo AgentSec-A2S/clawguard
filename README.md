@@ -161,6 +161,23 @@ clawguard scan --json
 clawguard scan --no-interactive --json
 ```
 
+## Notification Configuration
+
+The first-run wizard saves the selected notification route into `~/.clawguard/config.toml`.
+If you want to change it later without rerunning the wizard, edit that file directly:
+
+```toml
+alert_strategy = "Desktop"
+webhook_url = "https://hooks.example.com/clawguard"
+```
+
+- `alert_strategy = "Desktop"` uses desktop notifications when the local session supports them and falls back to log-only output when it does not
+- `alert_strategy = "Webhook"` requires `webhook_url` and the URL must start with `http://` or `https://`
+- `alert_strategy = "LogOnly"` keeps all notification delivery inside the foreground `watch` output
+
+Daily digest cadence starts when `clawguard watch` first evaluates digest delivery for the saved route.
+ClawGuard seeds the digest cursor on that first evaluation instead of backfilling older alerts, so the first delivered digest only includes alerts created after digest cadence starts.
+
 ## Output Model
 
 ClawGuard is findings-first.

@@ -5,6 +5,7 @@ use assert_cmd::Command;
 use clawguard::config::schema::AlertStrategy;
 use clawguard::config::store::{load_config_from_path, save_config_for_home};
 use clawguard::state::db::{StateStore, StateStoreConfig};
+use clawguard::state::model::NotificationCursorRecord;
 use serde_json::Value;
 use tempfile::tempdir;
 
@@ -65,6 +66,16 @@ fn set_saved_alert_strategy(home_dir: &Path, strategy: AlertStrategy, webhook_ur
     config.alert_strategy = strategy;
     config.webhook_url = webhook_url.map(str::to_string);
     save_config_for_home(&config, home_dir).expect("config should save");
+}
+
+fn set_notification_cursor(home_dir: &Path, route_key: &str, unix_ms: u64) {
+    let mut store = open_state_store(home_dir);
+    store
+        .set_notification_cursor(&NotificationCursorRecord {
+            cursor_key: format!("daily_digest:{route_key}"),
+            unix_ms,
+        })
+        .expect("notification cursor should save");
 }
 
 fn mutate_openclaw_config(state_dir: &Path) {
@@ -472,5 +483,95 @@ fn watch_continues_when_notification_delivery_warns() {
             .expect("receipt lookup should succeed")
             .is_none(),
         "warning-only notification failures must not record receipts"
+    );
+}
+
+#[test]
+fn watch_human_output_reports_notification_state_even_when_idle() {
+    let (_temp_dir, home_dir, _state_dir) = prepare_openclaw_home();
+    bootstrap_saved_config(&home_dir);
+
+    Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["baseline", "approve"])
+        .assert()
+        .success();
+    set_saved_alert_strategy(&home_dir, AlertStrategy::LogOnly, None);
+
+    let assert = Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["watch", "--iterations", "1", "--poll-interval-ms", "0"])
+        .assert()
+        .success();
+    let stdout = stdout_text(&assert);
+
+    assert!(
+        stdout.contains("notifications handled: 0, daily digest delivered: false"),
+        "human watch output should always show the notification status line"
+    );
+}
+
+#[test]
+fn watch_json_reports_daily_digest_when_cursor_is_due() {
+    let (_temp_dir, home_dir, state_dir) = prepare_openclaw_home();
+    bootstrap_saved_config(&home_dir);
+
+    Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["baseline", "approve"])
+        .assert()
+        .success();
+    set_saved_alert_strategy(&home_dir, AlertStrategy::LogOnly, None);
+    mutate_openclaw_config(&state_dir);
+
+    let first = Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args([
+            "watch",
+            "--iterations",
+            "1",
+            "--poll-interval-ms",
+            "0",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let first_output: Value = serde_json::from_str(stdout_text(&first).trim())
+        .expect("first output should be valid json");
+    assert_eq!(first_output["alerts_notified"].as_u64(), Some(1));
+    assert_eq!(first_output["digest_delivered"].as_bool(), Some(false));
+
+    set_notification_cursor(&home_dir, "log_only", 0);
+
+    let second = Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args([
+            "watch",
+            "--iterations",
+            "1",
+            "--poll-interval-ms",
+            "0",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let second_output: Value = serde_json::from_str(stdout_text(&second).trim())
+        .expect("second output should be valid json");
+
+    assert_eq!(second_output["alerts_notified"].as_u64(), Some(0));
+    assert_eq!(second_output["digest_delivered"].as_bool(), Some(true));
+    assert!(
+        second_output["notification_logs"]
+            .as_array()
+            .is_some_and(|logs| logs.iter().any(|line| {
+                line.as_str()
+                    .is_some_and(|text| text.contains("[clawguard:digest:"))
+            })),
+        "daily digest delivery should surface a digest log line in the CLI JSON output"
     );
 }

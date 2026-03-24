@@ -54,20 +54,46 @@ pub struct NotificationServices<'a> {
     pub webhook_transport: &'a dyn WebhookTransport,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotifyError {
     State(String),
+    PendingAlertDeliveryState {
+        message: String,
+        partial_report: PendingAlertDeliveryReport,
+    },
+    DailyDigestState {
+        message: String,
+        partial_report: DailyDigestDeliveryReport,
+    },
 }
 
 impl Display for NotifyError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::State(message) => write!(f, "{message}"),
+            Self::State(message)
+            | Self::PendingAlertDeliveryState { message, .. }
+            | Self::DailyDigestState { message, .. } => write!(f, "{message}"),
         }
     }
 }
 
 impl std::error::Error for NotifyError {}
+
+impl NotifyError {
+    pub fn pending_report(&self) -> Option<&PendingAlertDeliveryReport> {
+        match self {
+            Self::PendingAlertDeliveryState { partial_report, .. } => Some(partial_report),
+            _ => None,
+        }
+    }
+
+    pub fn daily_digest_report(&self) -> Option<&DailyDigestDeliveryReport> {
+        match self {
+            Self::DailyDigestState { partial_report, .. } => Some(partial_report),
+            _ => None,
+        }
+    }
+}
 
 impl From<StateStoreError> for NotifyError {
     fn from(value: StateStoreError) -> Self {
@@ -149,12 +175,22 @@ pub fn deliver_pending_alerts_for_route_with_services(
         }
 
         if outcome.handled {
-            store.record_notification_receipt(&NotificationReceiptRecord {
+            report.delivered_count += 1;
+            if let Err(error) = store.record_notification_receipt(&NotificationReceiptRecord {
                 alert_id: alert.alert_id,
                 delivery_route: route_key.to_string(),
                 delivered_at_unix_ms,
-            })?;
-            report.delivered_count += 1;
+            }) {
+                report.warnings.push(format!(
+                    "notification receipt was not recorded after a handled delivery: {error}"
+                ));
+                return Err(NotifyError::PendingAlertDeliveryState {
+                    message: format!(
+                        "failed to persist notification receipt for route {route_key}: {error}"
+                    ),
+                    partial_report: report,
+                });
+            }
         }
     }
 
@@ -201,19 +237,27 @@ pub fn deliver_daily_digest_if_due_with_services(
     }
 
     if cursor.is_none() {
-        // Start digest cadence from the first watch-driven evaluation instead of immediately
-        // backfilling historical alerts based on their original creation timestamps.
-        store.set_notification_cursor(&NotificationCursorRecord {
-            cursor_key,
-            unix_ms: delivered_at_unix_ms,
-        })?;
-        return Ok(DailyDigestDeliveryReport {
+        let report = DailyDigestDeliveryReport {
             handled: false,
             suppressed: true,
             alert_count: alerts.len(),
             warnings: Vec::new(),
             log_line: None,
-        });
+        };
+        // Start digest cadence from the first watch-driven evaluation instead of immediately
+        // backfilling historical alerts based on their original creation timestamps.
+        if let Err(error) = store.set_notification_cursor(&NotificationCursorRecord {
+            cursor_key,
+            unix_ms: delivered_at_unix_ms,
+        }) {
+            return Err(NotifyError::DailyDigestState {
+                message: format!(
+                    "failed to seed daily digest cursor for route {route_key}: {error}"
+                ),
+                partial_report: report,
+            });
+        }
+        return Ok(report);
     }
 
     let digest_window_start_unix_ms = cursor.as_ref().map_or(0, |cursor| cursor.unix_ms);
@@ -236,20 +280,32 @@ pub fn deliver_daily_digest_if_due_with_services(
         services,
     );
 
-    if outcome.handled {
-        store.set_notification_cursor(&NotificationCursorRecord {
-            cursor_key,
-            unix_ms: delivered_at_unix_ms,
-        })?;
-    }
-
-    Ok(DailyDigestDeliveryReport {
+    let mut report = DailyDigestDeliveryReport {
         handled: outcome.handled,
         suppressed: false,
         alert_count: summary.alert_count,
         warnings: outcome.warnings,
         log_line: outcome.log_line,
-    })
+    };
+
+    if outcome.handled {
+        if let Err(error) = store.set_notification_cursor(&NotificationCursorRecord {
+            cursor_key,
+            unix_ms: delivered_at_unix_ms,
+        }) {
+            report.warnings.push(format!(
+                "daily digest cursor was not updated after delivery: {error}"
+            ));
+            return Err(NotifyError::DailyDigestState {
+                message: format!(
+                    "failed to advance daily digest cursor for route {route_key}: {error}"
+                ),
+                partial_report: report,
+            });
+        }
+    }
+
+    Ok(report)
 }
 
 pub fn notification_message_for_alert(alert: &AlertRecord) -> NotificationMessage {

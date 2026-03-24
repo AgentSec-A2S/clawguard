@@ -91,6 +91,78 @@ fn webhook_strategy_round_trips_with_webhook_url() {
 }
 
 #[test]
+fn webhook_strategy_requires_webhook_url_in_non_interactive_mode() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let home_dir = temp_dir.path().join("home");
+    fs::create_dir(&home_dir).expect("home dir should be created");
+
+    let discovery = DiscoveryReport {
+        runtimes: vec![DetectedRuntime {
+            preset_id: "openclaw".to_string(),
+            root: None,
+            targets: Vec::new(),
+            warnings: Vec::new(),
+            recommended: true,
+        }],
+        warnings: Vec::new(),
+    };
+
+    let error = run_non_interactive(
+        &discovery,
+        WizardAnswers {
+            selected_preset: None,
+            alert_strategy: AlertStrategy::Webhook,
+            webhook_url: None,
+            strictness: Strictness::Recommended,
+        },
+        &home_dir,
+    )
+    .expect_err("webhook mode should require a webhook URL");
+
+    assert!(
+        error
+            .to_string()
+            .contains("requires a configured webhook URL"),
+        "missing webhook configuration should return a specific validation error"
+    );
+}
+
+#[test]
+fn webhook_strategy_rejects_non_http_url_in_non_interactive_mode() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let home_dir = temp_dir.path().join("home");
+    fs::create_dir(&home_dir).expect("home dir should be created");
+
+    let discovery = DiscoveryReport {
+        runtimes: vec![DetectedRuntime {
+            preset_id: "openclaw".to_string(),
+            root: None,
+            targets: Vec::new(),
+            warnings: Vec::new(),
+            recommended: true,
+        }],
+        warnings: Vec::new(),
+    };
+
+    let error = run_non_interactive(
+        &discovery,
+        WizardAnswers {
+            selected_preset: None,
+            alert_strategy: AlertStrategy::Webhook,
+            webhook_url: Some("ftp://example.invalid/clawguard".to_string()),
+            strictness: Strictness::Recommended,
+        },
+        &home_dir,
+    )
+    .expect_err("non-http webhook URLs should be rejected");
+
+    assert!(
+        error.to_string().contains("http:// or https://"),
+        "invalid webhook URLs should explain the accepted schemes"
+    );
+}
+
+#[test]
 fn legacy_config_without_webhook_url_still_loads() {
     let temp_dir = tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("config.toml");

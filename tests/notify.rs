@@ -7,6 +7,7 @@ use clawguard::notify::platform::{
 use clawguard::notify::webhook::{
     build_webhook_payload, WebhookDigestPayload, WebhookPayload, WebhookTransport,
 };
+use clawguard::notify::NotifyError;
 use clawguard::notify::{
     deliver_alert_with_services, deliver_daily_digest_if_due_with_services,
     deliver_pending_alerts_for_route_with_services, NotificationServices,
@@ -16,6 +17,7 @@ use clawguard::scan::{
 };
 use clawguard::state::db::{StateStore, StateStoreConfig};
 use clawguard::state::model::{AlertRecord, AlertStatus, NotificationCursorRecord};
+use rusqlite::Connection;
 use tempfile::tempdir;
 
 #[test]
@@ -276,6 +278,66 @@ fn pending_alert_delivery_failure_returns_warning_without_receipt() {
 }
 
 #[test]
+fn pending_alert_delivery_preserves_partial_report_when_receipt_write_fails() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let db_path = temp_dir.path().join("state.db");
+    let mut store = StateStore::open(
+        StateStoreConfig::for_path(db_path.clone())
+            .with_busy_timeout_ms(1)
+            .with_lock_retry_count(0)
+            .with_lock_retry_backoff_ms(0),
+    )
+    .expect("db should open")
+    .store;
+    let alert = sample_alert();
+    let config = log_only_config();
+    let desktop = FakeDesktopNotifier::default();
+    let webhook = FakeWebhookTransport::success();
+    let services = NotificationServices {
+        platform: PlatformSnapshot::default(),
+        desktop_notifier: &desktop,
+        webhook_transport: &webhook,
+    };
+
+    store.append_alert(&alert).expect("alert should persist");
+
+    let lock_conn = Connection::open(&db_path).expect("lock connection should open");
+    lock_conn
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("lock transaction should start");
+
+    let error = deliver_pending_alerts_for_route_with_services(&mut store, &config, 100, &services)
+        .expect_err("receipt persistence should fail while the database is locked");
+    let partial_report = error
+        .pending_report()
+        .cloned()
+        .expect("receipt write failures should preserve the partial delivery report");
+
+    drop(lock_conn);
+
+    assert!(matches!(
+        error,
+        NotifyError::PendingAlertDeliveryState { .. }
+    ));
+    assert_eq!(partial_report.delivered_count, 1);
+    assert_eq!(partial_report.log_lines.len(), 1);
+    assert!(
+        partial_report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("receipt was not recorded")),
+        "partial report should explain that delivery succeeded before receipt persistence failed"
+    );
+    assert!(
+        store
+            .notification_receipt_for_alert(&alert.alert_id, "log_only")
+            .expect("receipt lookup should succeed")
+            .is_none(),
+        "failed receipt persistence must not invent a stored receipt"
+    );
+}
+
+#[test]
 fn daily_digest_is_suppressed_when_no_new_alerts_exist() {
     let temp_dir = tempdir().expect("temp dir should be created");
     let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
@@ -504,6 +566,83 @@ fn daily_digest_failure_does_not_advance_cursor() {
             .expect("cursor lookup should succeed")
             .is_some_and(|cursor| cursor.unix_ms == 1_763_949_000_000),
         "failed digest delivery must not advance the cursor"
+    );
+}
+
+#[test]
+fn daily_digest_preserves_partial_report_when_cursor_update_fails() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let db_path = temp_dir.path().join("state.db");
+    let mut store = StateStore::open(
+        StateStoreConfig::for_path(db_path.clone())
+            .with_busy_timeout_ms(1)
+            .with_lock_retry_count(0)
+            .with_lock_retry_backoff_ms(0),
+    )
+    .expect("db should open")
+    .store;
+    let config = log_only_config();
+    let desktop = FakeDesktopNotifier::default();
+    let webhook = FakeWebhookTransport::success();
+    let services = NotificationServices {
+        platform: PlatformSnapshot::default(),
+        desktop_notifier: &desktop,
+        webhook_transport: &webhook,
+    };
+
+    store
+        .append_alert(&sample_alert())
+        .expect("alert should persist");
+    store
+        .set_notification_cursor(&NotificationCursorRecord {
+            cursor_key: "daily_digest:log_only".to_string(),
+            unix_ms: 1_763_949_000_000,
+        })
+        .expect("digest cursor should persist");
+
+    let lock_conn = Connection::open(&db_path).expect("lock connection should open");
+    lock_conn
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("lock transaction should start");
+
+    let error = deliver_daily_digest_if_due_with_services(
+        &mut store,
+        &config,
+        1_764_050_000_000,
+        &services,
+    )
+    .expect_err("cursor persistence should fail while the database is locked");
+    let partial_report = error
+        .daily_digest_report()
+        .cloned()
+        .expect("cursor write failures should preserve the delivered digest report");
+
+    drop(lock_conn);
+
+    assert!(matches!(error, NotifyError::DailyDigestState { .. }));
+    assert!(partial_report.handled);
+    assert!(!partial_report.suppressed);
+    assert_eq!(partial_report.alert_count, 1);
+    assert!(
+        partial_report
+            .log_line
+            .as_deref()
+            .is_some_and(|line| line.contains("[clawguard:digest:")),
+        "partial digest report should preserve the emitted digest log line"
+    );
+    assert!(
+        partial_report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("cursor was not updated")),
+        "partial digest report should explain that the cursor write failed after delivery"
+    );
+    assert!(
+        store
+            .notification_cursor("daily_digest:log_only")
+            .expect("cursor lookup should succeed")
+            .is_some_and(|cursor| cursor.unix_ms == 1_763_949_000_000),
+        "failed cursor persistence must leave the existing cursor unchanged"
     );
 }
 

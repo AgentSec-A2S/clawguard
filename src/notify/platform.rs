@@ -93,15 +93,15 @@ impl Display for PlatformNotifyError {
 
 impl std::error::Error for PlatformNotifyError {}
 
-fn run_osascript_notification(notification: &DesktopNotification) -> Result<(), String> {
-    let script = format!(
-        "display notification \"{}\" with title \"{}\"",
-        escape_applescript_string(&notification.body),
-        escape_applescript_string(&notification.title)
-    );
+const OSASCRIPT_NOTIFICATION_SCRIPT: [&str; 3] = [
+    "on run argv",
+    "display notification (item 1 of argv) with title (item 2 of argv)",
+    "end run",
+];
 
+fn run_osascript_notification(notification: &DesktopNotification) -> Result<(), String> {
     let output = Command::new("osascript")
-        .args(["-e", &script])
+        .args(osascript_invocation_args(notification))
         .output()
         .map_err(|error| {
             PlatformNotifyError::Launch(format!("failed to run osascript notifier: {error}"))
@@ -117,6 +117,20 @@ fn run_osascript_notification(notification: &DesktopNotification) -> Result<(), 
         ))
         .to_string())
     }
+}
+
+fn osascript_invocation_args(notification: &DesktopNotification) -> Vec<String> {
+    vec![
+        "-e".to_string(),
+        OSASCRIPT_NOTIFICATION_SCRIPT[0].to_string(),
+        "-e".to_string(),
+        OSASCRIPT_NOTIFICATION_SCRIPT[1].to_string(),
+        "-e".to_string(),
+        OSASCRIPT_NOTIFICATION_SCRIPT[2].to_string(),
+        "--".to_string(),
+        notification.body.clone(),
+        notification.title.clone(),
+    ]
 }
 
 fn run_notify_send_notification(notification: &DesktopNotification) -> Result<(), String> {
@@ -140,14 +154,45 @@ fn run_notify_send_notification(notification: &DesktopNotification) -> Result<()
     }
 }
 
-fn escape_applescript_string(input: &str) -> String {
-    input.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 fn command_on_path(command: &str) -> bool {
     let Some(path_value) = env::var_os("PATH") else {
         return false;
     };
 
     env::split_paths(&path_value).any(|directory| directory.join(command).is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        osascript_invocation_args, DesktopNotification, DesktopNotifierKind,
+        OSASCRIPT_NOTIFICATION_SCRIPT,
+    };
+
+    #[test]
+    fn osascript_invocation_keeps_notification_text_out_of_script_source() {
+        let notification = DesktopNotification {
+            kind: DesktopNotifierKind::Osascript,
+            title: "\" & do shell script \"id\" & \"".to_string(),
+            body: "/tmp/openclaw.json\nline two".to_string(),
+        };
+
+        let args = osascript_invocation_args(&notification);
+
+        assert_eq!(
+            &args[..6],
+            &[
+                "-e".to_string(),
+                OSASCRIPT_NOTIFICATION_SCRIPT[0].to_string(),
+                "-e".to_string(),
+                OSASCRIPT_NOTIFICATION_SCRIPT[1].to_string(),
+                "-e".to_string(),
+                OSASCRIPT_NOTIFICATION_SCRIPT[2].to_string(),
+            ],
+            "AppleScript source should stay static and should not inline untrusted text"
+        );
+        assert_eq!(args[6], "--");
+        assert_eq!(args[7], notification.body);
+        assert_eq!(args[8], notification.title);
+    }
 }

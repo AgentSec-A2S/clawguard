@@ -277,7 +277,7 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
                 warnings.push(warning_output_from_message(&format!(
                     "pending alert delivery state error: {error}"
                 )));
-                PendingAlertDeliveryReport::default()
+                error.pending_report().cloned().unwrap_or_default()
             }
         };
         let digest_delivery = match deliver_daily_digest_if_due_with_services(
@@ -291,13 +291,16 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
                 warnings.push(warning_output_from_message(&format!(
                     "daily digest delivery state error: {error}"
                 )));
-                DailyDigestDeliveryReport {
-                    handled: false,
-                    suppressed: true,
-                    alert_count: 0,
-                    warnings: Vec::new(),
-                    log_line: None,
-                }
+                error
+                    .daily_digest_report()
+                    .cloned()
+                    .unwrap_or(DailyDigestDeliveryReport {
+                        handled: false,
+                        suppressed: true,
+                        alert_count: 0,
+                        warnings: Vec::new(),
+                        log_line: None,
+                    })
             }
         };
         warnings.extend(
@@ -466,12 +469,10 @@ fn render_watch_iteration_output(json: bool, output: &WatchIterationOutput) -> R
         "event rescans: {}, debounced events: {}",
         output.rescanned_event_count, output.debounced_event_count
     );
-    if output.alerts_notified > 0 || output.digest_delivered {
-        println!(
-            "notifications handled: {}, daily digest delivered: {}",
-            output.alerts_notified, output.digest_delivered
-        );
-    }
+    println!(
+        "notifications handled: {}, daily digest delivered: {}",
+        output.alerts_notified, output.digest_delivered
+    );
 
     Ok(())
 }

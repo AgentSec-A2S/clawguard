@@ -138,8 +138,11 @@ fn prompt_webhook_url<R: BufRead, W: Write>(
         return Ok(None);
     }
 
-    writeln!(output, "Webhook URL (required for Webhook alerts)")
-        .map_err(|error| WizardError::PromptFailed(error.to_string()))?;
+    writeln!(
+        output,
+        "Webhook URL (required for Webhook alerts; must start with http:// or https://)"
+    )
+    .map_err(|error| WizardError::PromptFailed(error.to_string()))?;
     let Some(url) = read_optional_line(input)? else {
         return Err(WizardError::PromptFailed(
             "webhook alert strategy requires a non-empty webhook URL".to_string(),
