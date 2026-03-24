@@ -1472,6 +1472,7 @@ fn app_config() -> AppConfig {
         preset: "openclaw".to_string(),
         strictness: Strictness::Recommended,
         alert_strategy: AlertStrategy::Desktop,
+        webhook_url: None,
         max_file_size_bytes: 1024 * 1024,
     }
 }

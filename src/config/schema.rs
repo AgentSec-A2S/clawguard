@@ -51,5 +51,7 @@ pub struct AppConfig {
     pub preset: String,
     pub strictness: Strictness,
     pub alert_strategy: AlertStrategy,
+    #[serde(default)]
+    pub webhook_url: Option<String>,
     pub max_file_size_bytes: u64,
 }

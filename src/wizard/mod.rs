@@ -46,6 +46,7 @@ fn run_interactive_with_io<R: BufRead, W: Write>(
 
     let selected_preset = explain_selected_runtime(discovery, &mut output)?;
     let alert_strategy = prompt_alert_strategy(&mut input, &mut output)?;
+    let webhook_url = prompt_webhook_url(&alert_strategy, &mut input, &mut output)?;
     let strictness = prompt_strictness(&mut input, &mut output)?;
 
     let config = run_non_interactive(
@@ -53,6 +54,7 @@ fn run_interactive_with_io<R: BufRead, W: Write>(
         WizardAnswers {
             selected_preset,
             alert_strategy,
+            webhook_url,
             strictness,
         },
         home_dir,
@@ -125,6 +127,26 @@ fn prompt_strictness<R: BufRead, W: Write>(
         Some("3") | Some("Strict") | Some("strict") => Strictness::Strict,
         _ => Strictness::Recommended,
     })
+}
+
+fn prompt_webhook_url<R: BufRead, W: Write>(
+    alert_strategy: &AlertStrategy,
+    input: &mut R,
+    output: &mut W,
+) -> Result<Option<String>, WizardError> {
+    if *alert_strategy != AlertStrategy::Webhook {
+        return Ok(None);
+    }
+
+    writeln!(output, "Webhook URL (required for Webhook alerts)")
+        .map_err(|error| WizardError::PromptFailed(error.to_string()))?;
+    let Some(url) = read_optional_line(input)? else {
+        return Err(WizardError::PromptFailed(
+            "webhook alert strategy requires a non-empty webhook URL".to_string(),
+        ));
+    };
+
+    Ok(Some(url))
 }
 
 fn read_optional_line<R: BufRead>(input: &mut R) -> Result<Option<String>, WizardError> {

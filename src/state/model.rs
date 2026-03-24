@@ -56,3 +56,16 @@ pub struct AlertRecord {
     pub created_at_unix_ms: u64,
     pub finding: Finding,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationReceiptRecord {
+    pub alert_id: String,
+    pub delivery_route: String,
+    pub delivered_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationCursorRecord {
+    pub cursor_key: String,
+    pub unix_ms: u64,
+}

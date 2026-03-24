@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use clawguard::config::schema::AlertStrategy;
+use clawguard::config::store::{load_config_from_path, save_config_for_home};
 use clawguard::state::db::{StateStore, StateStoreConfig};
 use serde_json::Value;
 use tempfile::tempdir;
@@ -53,6 +55,26 @@ fn open_state_store(home_dir: &Path) -> StateStore {
     ))
     .expect("state db should open")
     .store
+}
+
+fn set_saved_alert_strategy(home_dir: &Path, strategy: AlertStrategy, webhook_url: Option<&str>) {
+    let config_path = home_dir.join(".clawguard").join("config.toml");
+    let mut config = load_config_from_path(&config_path)
+        .expect("saved config should load")
+        .expect("saved config should exist");
+    config.alert_strategy = strategy;
+    config.webhook_url = webhook_url.map(str::to_string);
+    save_config_for_home(&config, home_dir).expect("config should save");
+}
+
+fn mutate_openclaw_config(state_dir: &Path) {
+    let config_path = state_dir.join("openclaw.json");
+    let original = fs::read_to_string(&config_path).expect("openclaw config should be readable");
+    fs::write(
+        &config_path,
+        format!("{original}\n// task13 drift fixture\n"),
+    )
+    .expect("openclaw config mutation should persist");
 }
 
 #[test]
@@ -283,4 +305,172 @@ fn watch_requires_saved_config() {
     let stderr = stderr_text(&assert);
 
     assert!(stderr.contains("requires saved configuration"));
+}
+
+#[test]
+fn watch_log_only_records_notification_receipt_for_new_alert() {
+    let (_temp_dir, home_dir, state_dir) = prepare_openclaw_home();
+    bootstrap_saved_config(&home_dir);
+
+    Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["baseline", "approve"])
+        .assert()
+        .success();
+    set_saved_alert_strategy(&home_dir, AlertStrategy::LogOnly, None);
+    mutate_openclaw_config(&state_dir);
+
+    let assert = Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args([
+            "watch",
+            "--iterations",
+            "1",
+            "--poll-interval-ms",
+            "0",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let stdout = stdout_text(&assert);
+    let parsed: Value = serde_json::from_str(stdout.trim()).expect("output should be valid json");
+
+    assert_eq!(parsed["alerts_notified"].as_u64(), Some(1));
+    assert!(
+        parsed["notification_logs"]
+            .as_array()
+            .is_some_and(|logs| logs.len() == 1),
+        "log-only alert delivery should surface one notification log line"
+    );
+
+    let store = open_state_store(&home_dir);
+    let alert = store
+        .list_unresolved_alerts()
+        .expect("unresolved alerts should load")
+        .into_iter()
+        .next()
+        .expect("watch should persist one unresolved drift alert");
+    assert!(
+        store
+            .notification_receipt_for_alert(&alert.alert_id, "log_only")
+            .expect("receipt lookup should succeed")
+            .is_some(),
+        "handled log-only notifications should record a per-route receipt"
+    );
+}
+
+#[test]
+fn watch_restart_does_not_redeliver_alerts_with_receipts() {
+    let (_temp_dir, home_dir, state_dir) = prepare_openclaw_home();
+    bootstrap_saved_config(&home_dir);
+
+    Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["baseline", "approve"])
+        .assert()
+        .success();
+    set_saved_alert_strategy(&home_dir, AlertStrategy::LogOnly, None);
+    mutate_openclaw_config(&state_dir);
+
+    let first = Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args([
+            "watch",
+            "--iterations",
+            "1",
+            "--poll-interval-ms",
+            "0",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let first_output: Value = serde_json::from_str(stdout_text(&first).trim())
+        .expect("first output should be valid json");
+    assert_eq!(first_output["alerts_notified"].as_u64(), Some(1));
+
+    let second = Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args([
+            "watch",
+            "--iterations",
+            "1",
+            "--poll-interval-ms",
+            "0",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let second_output: Value = serde_json::from_str(stdout_text(&second).trim())
+        .expect("second output should be valid json");
+    assert_eq!(second_output["alerts_notified"].as_u64(), Some(0));
+    assert!(
+        second_output["notification_logs"]
+            .as_array()
+            .is_some_and(|logs| logs.is_empty()),
+        "alerts with existing receipts should not be redelivered on restart"
+    );
+}
+
+#[test]
+fn watch_continues_when_notification_delivery_warns() {
+    let (_temp_dir, home_dir, state_dir) = prepare_openclaw_home();
+    bootstrap_saved_config(&home_dir);
+
+    Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["baseline", "approve"])
+        .assert()
+        .success();
+    set_saved_alert_strategy(&home_dir, AlertStrategy::Webhook, None);
+    mutate_openclaw_config(&state_dir);
+
+    let assert = Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args([
+            "watch",
+            "--iterations",
+            "1",
+            "--poll-interval-ms",
+            "0",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let parsed: Value =
+        serde_json::from_str(stdout_text(&assert).trim()).expect("output should be valid json");
+    let warnings = parsed["warnings"]
+        .as_array()
+        .expect("watch json should include warnings");
+
+    assert_eq!(parsed["alerts_notified"].as_u64(), Some(0));
+    assert!(
+        warnings.iter().any(|warning| {
+            warning["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("webhook_url"))
+        }),
+        "watch should surface delivery warnings without exiting"
+    );
+
+    let store = open_state_store(&home_dir);
+    let alert = store
+        .list_unresolved_alerts()
+        .expect("unresolved alerts should load")
+        .into_iter()
+        .next()
+        .expect("watch should still persist the unresolved alert");
+    assert!(
+        store
+            .notification_receipt_for_alert(&alert.alert_id, "webhook")
+            .expect("receipt lookup should succeed")
+            .is_none(),
+        "warning-only notification failures must not record receipts"
+    );
 }

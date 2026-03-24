@@ -2,6 +2,7 @@ pub mod cli;
 pub mod config;
 pub mod daemon;
 pub mod discovery;
+pub mod notify;
 pub mod scan;
 pub mod state;
 pub mod ui;

@@ -50,6 +50,11 @@ ClawGuard exists to give you an action-oriented answer:
 - Advisory/version matching when readable version evidence exists, including a bounded fallback to common source-layout manifests such as `packages/core/package.json`
 - Explicit baseline approval for the current runtime state
 - Foreground watch loop that records cold-boot snapshots and drift-triggered rescans into ClawGuard state
+- Watch-driven notification routing for persisted alerts:
+  - desktop notifications when the local environment supports them
+  - webhook delivery through a persisted webhook URL
+  - log-only fallback in headless or unsupported environments
+- Once-per-day digest delivery from stored alert history during `watch`
 - Conservative scope: no broad auto-remediation, no trust UI, no hidden mutation of OpenClaw state
 
 ## What It Checks Today
@@ -69,7 +74,7 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
 - `Baseline approval`
   - turns the current observed file-hash evidence into the approved baseline set used for drift detection
 - `Watch loop`
-  - watches protected files and skill roots, re-scans on change, records snapshots, and appends drift alerts
+  - watches protected files and skill roots, re-scans on change, records snapshots, appends drift alerts, and delivers notifications from persisted alert state
 
 ## How It Works
 
@@ -136,6 +141,7 @@ cargo build --release
   - explicitly records the current OpenClaw file-hash evidence as the approved baseline set for drift detection
 - `clawguard watch`
   - starts the foreground watcher loop for the saved config
+  - delivers immediate notifications for newly persisted alerts and evaluates the daily digest during the watch loop
   - `--iterations 1` is useful for smoke-testing the cold-boot path without leaving a long-running process behind
 - `clawguard --json` or `clawguard scan --json`
   - emits machine-readable findings JSON derived from the shared scan result model
@@ -173,8 +179,9 @@ The terminal UI and `--json` output are both generated from the same underlying 
 ## Current V0 Scope And Limits
 
 - V0.5 is OpenClaw-first; it is not a multi-runtime product yet
-- V0.5 now includes an explicit baseline-approval command and a foreground watcher loop
-- it is still not a background service manager, desktop notifier, or trust UI
+- V0.5 now includes an explicit baseline-approval command, a foreground watcher loop, and watch-scoped notification delivery
+- manual `scan` remains findings-first and side-effect free; notifications belong to `watch`
+- it is still not a background service manager, retry queue, trust UI, or broad remediation system
 - ClawGuard does not silently change OpenClaw state
 - narrow restore helpers exist internally, but there is still no public `trust` / `restore` command
 - The bundled advisory feed is intentionally empty until curated production advisories are shipped

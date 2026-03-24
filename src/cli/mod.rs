@@ -14,6 +14,12 @@ use crate::daemon::watch::{
     WatchEventOutcome, WatchIterationOutcome, WatchService, WatchWarning,
 };
 use crate::discovery::{discover_from_builtin_presets, DiscoveryOptions, DiscoveryReport};
+use crate::notify::{
+    deliver_daily_digest_if_due_with_services, deliver_pending_alerts_for_route_with_services,
+    platform::{CommandDesktopNotifier, PlatformSnapshot},
+    webhook::UreqWebhookTransport,
+    DailyDigestDeliveryReport, NotificationServices, PendingAlertDeliveryReport,
+};
 use crate::scan::baseline::collect_restore_payload_candidates;
 use crate::scan::{
     collect_scan_evidence, run_scan, runtime_not_detected_result, BaselineArtifact, ScanResult,
@@ -89,6 +95,9 @@ struct WatchIterationOutput {
     cold_boot: Option<WatchCycleOutput>,
     rescanned_event_count: usize,
     debounced_event_count: usize,
+    alerts_notified: usize,
+    digest_delivered: bool,
+    notification_logs: Vec<String>,
     warnings: Vec<WarningOutput>,
 }
 
@@ -223,7 +232,15 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
     }
     pending_warning_outputs.extend(backend_warnings.iter().map(warning_output_from_watch));
 
-    let mut service = WatchService::new(config, DiscoveryOptions::default(), state.store);
+    let mut service = WatchService::new(config.clone(), DiscoveryOptions::default(), state.store);
+    let platform = PlatformSnapshot::detect();
+    let desktop_notifier = CommandDesktopNotifier;
+    let webhook_transport = UreqWebhookTransport::default();
+    let notification_services = NotificationServices {
+        platform,
+        desktop_notifier: &desktop_notifier,
+        webhook_transport: &webhook_transport,
+    };
     let state_db_path = service.state().path().display().to_string();
     let max_iterations = if args.iterations == 0 {
         None
@@ -249,11 +266,59 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
         };
         let mut warnings = std::mem::take(&mut pending_warning_outputs);
         warnings.extend(outcome.warnings.iter().map(warning_output_from_watch));
+        let alert_delivery = match deliver_pending_alerts_for_route_with_services(
+            service.state_mut(),
+            &config,
+            now_unix_ms(),
+            &notification_services,
+        ) {
+            Ok(report) => report,
+            Err(error) => {
+                warnings.push(warning_output_from_message(&format!(
+                    "pending alert delivery state error: {error}"
+                )));
+                PendingAlertDeliveryReport::default()
+            }
+        };
+        let digest_delivery = match deliver_daily_digest_if_due_with_services(
+            service.state_mut(),
+            &config,
+            now_unix_ms(),
+            &notification_services,
+        ) {
+            Ok(report) => report,
+            Err(error) => {
+                warnings.push(warning_output_from_message(&format!(
+                    "daily digest delivery state error: {error}"
+                )));
+                DailyDigestDeliveryReport {
+                    handled: false,
+                    suppressed: true,
+                    alert_count: 0,
+                    warnings: Vec::new(),
+                    log_line: None,
+                }
+            }
+        };
+        warnings.extend(
+            alert_delivery
+                .warnings
+                .iter()
+                .map(|warning| warning_output_from_message(warning)),
+        );
+        warnings.extend(
+            digest_delivery
+                .warnings
+                .iter()
+                .map(|warning| warning_output_from_message(warning)),
+        );
         let output = watch_iteration_output(
             completed_iterations,
             &backend_label,
             &state_db_path,
             &outcome,
+            &alert_delivery,
+            &digest_delivery,
             warnings,
         );
 
@@ -383,6 +448,9 @@ fn render_watch_iteration_output(json: bool, output: &WatchIterationOutput) -> R
     for warning in &output.warnings {
         eprintln!("warning: {}", warning.message);
     }
+    for log_line in &output.notification_logs {
+        println!("{log_line}");
+    }
 
     println!(
         "watch iteration {} via {} backend",
@@ -398,6 +466,12 @@ fn render_watch_iteration_output(json: bool, output: &WatchIterationOutput) -> R
         "event rescans: {}, debounced events: {}",
         output.rescanned_event_count, output.debounced_event_count
     );
+    if output.alerts_notified > 0 || output.digest_delivered {
+        println!(
+            "notifications handled: {}, daily digest delivered: {}",
+            output.alerts_notified, output.digest_delivered
+        );
+    }
 
     Ok(())
 }
@@ -406,6 +480,7 @@ fn default_wizard_answers() -> WizardAnswers {
     WizardAnswers {
         selected_preset: None,
         alert_strategy: AlertStrategy::Desktop,
+        webhook_url: None,
         strictness: Strictness::Recommended,
     }
 }
@@ -555,6 +630,8 @@ fn watch_iteration_output(
     backend: &str,
     state_db_path: &str,
     outcome: &WatchIterationOutcome,
+    alert_delivery: &PendingAlertDeliveryReport,
+    digest_delivery: &DailyDigestDeliveryReport,
     warnings: Vec<WarningOutput>,
 ) -> WatchIterationOutput {
     let rescanned_event_count = outcome
@@ -567,6 +644,10 @@ fn watch_iteration_output(
         .iter()
         .filter(|event| matches!(event, WatchEventOutcome::Debounced))
         .count();
+    let mut notification_logs = alert_delivery.log_lines.clone();
+    if let Some(log_line) = &digest_delivery.log_line {
+        notification_logs.push(log_line.clone());
+    }
 
     WatchIterationOutput {
         iteration,
@@ -575,6 +656,9 @@ fn watch_iteration_output(
         cold_boot: outcome.cold_boot.as_ref().map(watch_cycle_output),
         rescanned_event_count,
         debounced_event_count,
+        alerts_notified: alert_delivery.delivered_count,
+        digest_delivered: digest_delivery.handled,
+        notification_logs,
         warnings,
     }
 }
@@ -598,6 +682,13 @@ fn warning_output_from_watch(warning: &WatchWarning) -> WarningOutput {
     WarningOutput {
         path: warning.path.as_ref().map(|path| path.display().to_string()),
         message: warning.message.clone(),
+    }
+}
+
+fn warning_output_from_message(message: &str) -> WarningOutput {
+    WarningOutput {
+        path: None,
+        message: message.to_string(),
     }
 }
 

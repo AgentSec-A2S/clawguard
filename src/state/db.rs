@@ -9,8 +9,8 @@ use rusqlite::{Connection, Error as SqlError, ErrorCode, OptionalExtension};
 use crate::scan::Finding;
 
 use super::model::{
-    AlertRecord, AlertStatus, BaselineRecord, RestorePayloadRecord, ScanSnapshot, StateWarning,
-    StateWarningKind,
+    AlertRecord, AlertStatus, BaselineRecord, NotificationCursorRecord, NotificationReceiptRecord,
+    RestorePayloadRecord, ScanSnapshot, StateWarning, StateWarningKind,
 };
 
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -531,6 +531,92 @@ impl StateStore {
         Ok(alerts)
     }
 
+    pub fn list_undelivered_alerts_for_route(
+        &self,
+        delivery_route: &str,
+    ) -> Result<Vec<AlertRecord>, StateStoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT a.alert_id, a.finding_id, a.status, a.created_at_unix_ms, a.finding_json
+             FROM alerts a
+             LEFT JOIN notification_receipts r
+               ON r.alert_id = a.alert_id
+              AND r.delivery_route = ?1
+             WHERE a.status IN ('open', 'acknowledged')
+               AND r.alert_id IS NULL
+             ORDER BY a.created_at_unix_ms ASC, a.alert_id ASC",
+        )?;
+        let rows = statement.query_map([delivery_route], |row| {
+            let status_text: String = row.get(2)?;
+            let finding_json: String = row.get(4)?;
+            let finding = serde_json::from_str(&finding_json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    Box::new(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("failed to deserialize alert finding: {error}"),
+                    )),
+                )
+            })?;
+
+            Ok(AlertRecord {
+                alert_id: row.get(0)?,
+                finding_id: row.get(1)?,
+                status: status_from_str(&status_text)?,
+                created_at_unix_ms: row.get::<_, i64>(3)? as u64,
+                finding,
+            })
+        })?;
+
+        let mut alerts = Vec::new();
+        for row in rows {
+            alerts.push(row?);
+        }
+
+        Ok(alerts)
+    }
+
+    pub fn list_alerts_created_after(
+        &self,
+        unix_ms_exclusive: u64,
+    ) -> Result<Vec<AlertRecord>, StateStoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT alert_id, finding_id, status, created_at_unix_ms, finding_json
+             FROM alerts
+             WHERE created_at_unix_ms > ?1
+             ORDER BY created_at_unix_ms ASC, alert_id ASC",
+        )?;
+        let rows = statement.query_map([unix_ms_exclusive as i64], |row| {
+            let status_text: String = row.get(2)?;
+            let finding_json: String = row.get(4)?;
+            let finding = serde_json::from_str(&finding_json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    Box::new(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("failed to deserialize alert finding: {error}"),
+                    )),
+                )
+            })?;
+
+            Ok(AlertRecord {
+                alert_id: row.get(0)?,
+                finding_id: row.get(1)?,
+                status: status_from_str(&status_text)?,
+                created_at_unix_ms: row.get::<_, i64>(3)? as u64,
+                finding,
+            })
+        })?;
+
+        let mut alerts = Vec::new();
+        for row in rows {
+            alerts.push(row?);
+        }
+
+        Ok(alerts)
+    }
+
     pub fn update_alert_status(
         &mut self,
         alert_id: &str,
@@ -550,6 +636,88 @@ impl StateStore {
 
             Ok(())
         })
+    }
+
+    pub fn record_notification_receipt(
+        &mut self,
+        receipt: &NotificationReceiptRecord,
+    ) -> Result<(), StateStoreError> {
+        self.run_write_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO notification_receipts (alert_id, delivery_route, delivered_at_unix_ms)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(alert_id, delivery_route) DO UPDATE SET
+                     delivered_at_unix_ms = excluded.delivered_at_unix_ms",
+                (
+                    &receipt.alert_id,
+                    &receipt.delivery_route,
+                    receipt.delivered_at_unix_ms as i64,
+                ),
+            )?;
+
+            Ok(())
+        })
+    }
+
+    pub fn notification_receipt_for_alert(
+        &self,
+        alert_id: &str,
+        delivery_route: &str,
+    ) -> Result<Option<NotificationReceiptRecord>, StateStoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT alert_id, delivery_route, delivered_at_unix_ms
+             FROM notification_receipts
+             WHERE alert_id = ?1 AND delivery_route = ?2",
+        )?;
+        let mut rows = statement.query((alert_id, delivery_route))?;
+
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+
+        Ok(Some(NotificationReceiptRecord {
+            alert_id: row.get(0)?,
+            delivery_route: row.get(1)?,
+            delivered_at_unix_ms: row.get::<_, i64>(2)? as u64,
+        }))
+    }
+
+    pub fn set_notification_cursor(
+        &mut self,
+        cursor: &NotificationCursorRecord,
+    ) -> Result<(), StateStoreError> {
+        self.run_write_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO notification_cursors (cursor_key, unix_ms)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(cursor_key) DO UPDATE SET
+                     unix_ms = excluded.unix_ms",
+                (&cursor.cursor_key, cursor.unix_ms as i64),
+            )?;
+
+            Ok(())
+        })
+    }
+
+    pub fn notification_cursor(
+        &self,
+        cursor_key: &str,
+    ) -> Result<Option<NotificationCursorRecord>, StateStoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT cursor_key, unix_ms
+             FROM notification_cursors
+             WHERE cursor_key = ?1",
+        )?;
+        let mut rows = statement.query([cursor_key])?;
+
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+
+        Ok(Some(NotificationCursorRecord {
+            cursor_key: row.get(0)?,
+            unix_ms: row.get::<_, i64>(1)? as u64,
+        }))
     }
 
     pub fn path(&self) -> &Path {
@@ -710,6 +878,18 @@ fn bootstrap_schema(conn: &Connection) -> Result<(), StateStoreError> {
             status TEXT NOT NULL,
             created_at_unix_ms INTEGER NOT NULL,
             finding_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS notification_receipts (
+            alert_id TEXT NOT NULL,
+            delivery_route TEXT NOT NULL,
+            delivered_at_unix_ms INTEGER NOT NULL,
+            PRIMARY KEY (alert_id, delivery_route)
+        );
+
+        CREATE TABLE IF NOT EXISTS notification_cursors (
+            cursor_key TEXT PRIMARY KEY,
+            unix_ms INTEGER NOT NULL
         );
         ",
     )?;

@@ -7,7 +7,8 @@ use clawguard::scan::{
 };
 use clawguard::state::db::{StateStore, StateStoreConfig, StateStoreError};
 use clawguard::state::model::{
-    AlertRecord, AlertStatus, BaselineRecord, RestorePayloadRecord, ScanSnapshot, StateWarningKind,
+    AlertRecord, AlertStatus, BaselineRecord, NotificationCursorRecord, NotificationReceiptRecord,
+    RestorePayloadRecord, ScanSnapshot, StateWarningKind,
 };
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -457,6 +458,114 @@ fn update_alert_status_removes_resolved_alert_from_unresolved_view() {
         .expect("alert status should update");
 
     assert!(store.list_unresolved_alerts().unwrap().is_empty());
+}
+
+#[test]
+fn notification_receipt_round_trips_by_alert_and_route() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    let receipt = NotificationReceiptRecord {
+        alert_id: "alert-open".to_string(),
+        delivery_route: "desktop".to_string(),
+        delivered_at_unix_ms: 1_763_900_100_000,
+    };
+    store
+        .record_notification_receipt(&receipt)
+        .expect("notification receipt should persist");
+
+    assert_eq!(
+        store
+            .notification_receipt_for_alert("alert-open", "desktop")
+            .unwrap(),
+        Some(receipt)
+    );
+    assert_eq!(
+        store
+            .notification_receipt_for_alert("alert-open", "webhook")
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn undelivered_alerts_for_route_exclude_alerts_with_existing_receipts() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    store
+        .append_alert(&alert_record(
+            "alert-desktop",
+            "finding-desktop",
+            AlertStatus::Open,
+        ))
+        .expect("desktop alert should persist");
+    store
+        .append_alert(&alert_record(
+            "alert-webhook",
+            "finding-webhook",
+            AlertStatus::Open,
+        ))
+        .expect("webhook alert should persist");
+    store
+        .record_notification_receipt(&NotificationReceiptRecord {
+            alert_id: "alert-desktop".to_string(),
+            delivery_route: "desktop".to_string(),
+            delivered_at_unix_ms: 1_763_900_100_000,
+        })
+        .expect("desktop receipt should persist");
+
+    let desktop_alerts = store
+        .list_undelivered_alerts_for_route("desktop")
+        .expect("desktop undelivered query should succeed");
+    let webhook_alerts = store
+        .list_undelivered_alerts_for_route("webhook")
+        .expect("webhook undelivered query should succeed");
+
+    assert_eq!(desktop_alerts.len(), 1);
+    assert_eq!(desktop_alerts[0].alert_id, "alert-webhook");
+    assert_eq!(webhook_alerts.len(), 2);
+}
+
+#[test]
+fn daily_digest_cursor_round_trips_by_key() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    let initial = NotificationCursorRecord {
+        cursor_key: "daily_digest:desktop".to_string(),
+        unix_ms: 1_763_900_200_000,
+    };
+    let updated = NotificationCursorRecord {
+        cursor_key: "daily_digest:desktop".to_string(),
+        unix_ms: 1_763_900_300_000,
+    };
+
+    store
+        .set_notification_cursor(&initial)
+        .expect("initial cursor should persist");
+    assert_eq!(
+        store.notification_cursor("daily_digest:desktop").unwrap(),
+        Some(initial)
+    );
+
+    store
+        .set_notification_cursor(&updated)
+        .expect("updated cursor should replace the prior value");
+    assert_eq!(
+        store.notification_cursor("daily_digest:desktop").unwrap(),
+        Some(updated)
+    );
+    assert_eq!(
+        store.notification_cursor("daily_digest:webhook").unwrap(),
+        None
+    );
 }
 
 #[test]

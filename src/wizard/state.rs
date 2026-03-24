@@ -8,6 +8,7 @@ use crate::discovery::DiscoveryReport;
 pub struct WizardAnswers {
     pub selected_preset: Option<String>,
     pub alert_strategy: AlertStrategy,
+    pub webhook_url: Option<String>,
     pub strictness: Strictness,
 }
 
@@ -60,6 +61,7 @@ pub fn build_app_config(
         preset: preset.id,
         strictness: answers.strictness,
         alert_strategy: answers.alert_strategy,
+        webhook_url: answers.webhook_url.clone(),
         max_file_size_bytes: preset.max_file_size_bytes,
     })
 }
