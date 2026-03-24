@@ -55,7 +55,11 @@ ClawGuard exists to give you an action-oriented answer:
   - webhook delivery through a persisted webhook URL
   - log-only fallback in headless or unsupported environments
 - Once-per-day digest delivery from stored alert history during `watch`
-- Conservative scope: no broad auto-remediation, no trust UI, no hidden mutation of OpenClaw state
+- Persisted operator surfaces for:
+  - `clawguard` / `clawguard status` human status view
+  - `clawguard alerts` history plus `clawguard alerts ignore <alert-id>`
+  - `clawguard trust openclaw-config` and `clawguard trust exec-approvals`
+- Conservative scope: no broad auto-remediation, no background trust UI, no hidden mutation of OpenClaw state
 
 ## What It Checks Today
 
@@ -134,11 +138,23 @@ cargo build --release
 
 - `clawguard`
   - on first run, detects OpenClaw, launches the setup wizard, runs an immediate scan, and renders findings
-  - after configuration, runs the current scan flow and renders the latest findings view
+  - after configuration, human output opens the persisted status view instead of immediately re-running the scan
+  - `clawguard --json` intentionally remains scan-compatible for automation
 - `clawguard scan`
   - runs the scan flow directly
+- `clawguard status`
+  - renders the persisted-state status view explicitly
+  - `clawguard status --json` emits the status JSON contract instead of scan findings JSON
+- `clawguard alerts`
+  - shows recent persisted alerts, newest first
+- `clawguard alerts ignore <alert-id>`
+  - marks one alert as acknowledged without deleting its history
 - `clawguard baseline approve`
   - explicitly records the current OpenClaw file-hash evidence as the approved baseline set for drift detection
+- `clawguard trust openclaw-config`
+  - restores the last approved `openclaw.json` payload captured during `baseline approve`
+- `clawguard trust exec-approvals`
+  - restores the last approved `exec-approvals.json` payload captured during `baseline approve`
 - `clawguard watch`
   - starts the foreground watcher loop for the saved config
   - delivers immediate notifications for newly persisted alerts and evaluates the daily digest during the watch loop
@@ -154,10 +170,15 @@ Common examples:
 
 ```bash
 clawguard
+clawguard status
+clawguard alerts
+clawguard alerts ignore alert-openclaw-config
 clawguard scan
 clawguard baseline approve
+clawguard trust openclaw-config
 clawguard watch --iterations 1
 clawguard scan --json
+clawguard status --json
 clawguard scan --no-interactive --json
 ```
 
@@ -196,11 +217,11 @@ The terminal UI and `--json` output are both generated from the same underlying 
 ## Current V0 Scope And Limits
 
 - V0.5 is OpenClaw-first; it is not a multi-runtime product yet
-- V0.5 now includes an explicit baseline-approval command, a foreground watcher loop, and watch-scoped notification delivery
+- V0.5 now includes baseline approval, a foreground watcher loop, watch-scoped notification delivery, and persisted status/alerts/trust commands
 - manual `scan` remains findings-first and side-effect free; notifications belong to `watch`
-- it is still not a background service manager, retry queue, trust UI, or broad remediation system
+- `trust` is intentionally narrow and allowlisted; it only restores payloads previously captured during `baseline approve`
+- it is still not a background service manager, retry queue, broad trust UI, or broad remediation system
 - ClawGuard does not silently change OpenClaw state
-- narrow restore helpers exist internally, but there is still no public `trust` / `restore` command
 - The bundled advisory feed is intentionally empty until curated production advisories are shipped
 - Advisory matching only runs when ClawGuard can read OpenClaw version evidence
   - today that means a colocated `package.json` or a bounded fallback such as `packages/core/package.json`

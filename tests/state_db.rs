@@ -461,6 +461,211 @@ fn update_alert_status_removes_resolved_alert_from_unresolved_view() {
 }
 
 #[test]
+fn recent_alerts_return_newest_first_with_a_bounded_limit() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    let mut oldest = alert_record("alert-oldest", "finding-oldest", AlertStatus::Open);
+    oldest.created_at_unix_ms = 1_763_573_000_000;
+    let mut middle = alert_record("alert-middle", "finding-middle", AlertStatus::Acknowledged);
+    middle.created_at_unix_ms = 1_763_573_100_000;
+    let mut newest = alert_record("alert-newest", "finding-newest", AlertStatus::Resolved);
+    newest.created_at_unix_ms = 1_763_573_200_000;
+
+    store
+        .append_alert(&oldest)
+        .expect("oldest alert should persist");
+    store
+        .append_alert(&middle)
+        .expect("middle alert should persist");
+    store
+        .append_alert(&newest)
+        .expect("newest alert should persist");
+
+    let recent = store
+        .list_recent_alerts(2)
+        .expect("recent alert query should succeed");
+
+    assert_eq!(
+        recent.iter().map(|alert| alert.alert_id.as_str()).collect::<Vec<_>>(),
+        vec!["alert-newest", "alert-middle"],
+        "recent alerts should include history statuses and return newest-first within the requested limit"
+    );
+}
+
+#[test]
+fn open_alerts_exclude_acknowledged_and_resolved_entries() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    store
+        .append_alert(&alert_record(
+            "alert-open",
+            "finding-open",
+            AlertStatus::Open,
+        ))
+        .expect("open alert should persist");
+    store
+        .append_alert(&alert_record(
+            "alert-ack",
+            "finding-ack",
+            AlertStatus::Acknowledged,
+        ))
+        .expect("acknowledged alert should persist");
+    store
+        .append_alert(&alert_record(
+            "alert-resolved",
+            "finding-resolved",
+            AlertStatus::Resolved,
+        ))
+        .expect("resolved alert should persist");
+
+    let open_alerts = store
+        .list_open_alerts()
+        .expect("open alert query should succeed");
+
+    assert_eq!(open_alerts.len(), 1);
+    assert_eq!(open_alerts[0].alert_id, "alert-open");
+    assert_eq!(open_alerts[0].status, AlertStatus::Open);
+}
+
+#[test]
+fn open_alerts_created_after_exclude_acknowledged_entries() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    let mut open_recent = alert_record("alert-open", "finding-open", AlertStatus::Open);
+    open_recent.created_at_unix_ms = 1_763_573_200_000;
+    let mut ack_recent = alert_record("alert-ack", "finding-ack", AlertStatus::Acknowledged);
+    ack_recent.created_at_unix_ms = 1_763_573_300_000;
+    let mut resolved_recent =
+        alert_record("alert-resolved", "finding-resolved", AlertStatus::Resolved);
+    resolved_recent.created_at_unix_ms = 1_763_573_400_000;
+
+    store
+        .append_alert(&open_recent)
+        .expect("open recent alert should persist");
+    store
+        .append_alert(&ack_recent)
+        .expect("acknowledged recent alert should persist");
+    store
+        .append_alert(&resolved_recent)
+        .expect("resolved recent alert should persist");
+
+    let digest_candidates = store
+        .list_open_alerts_created_after(1_763_573_100_000)
+        .expect("digest candidate query should succeed");
+
+    assert_eq!(digest_candidates.len(), 1);
+    assert_eq!(digest_candidates[0].alert_id, "alert-open");
+}
+
+#[test]
+fn alert_lookup_by_id_uses_the_primary_key_contract() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+    let alert = alert_record("alert-open", "finding-open", AlertStatus::Open);
+
+    store
+        .append_alert(&alert)
+        .expect("alert should persist for lookup");
+
+    assert_eq!(
+        store
+            .alert_by_id("alert-open")
+            .expect("alert lookup should succeed"),
+        Some(alert)
+    );
+    assert_eq!(
+        store
+            .alert_by_id("missing-alert")
+            .expect("missing alert lookup should succeed"),
+        None
+    );
+}
+
+#[test]
+fn acknowledged_alert_count_tracks_only_acknowledged_entries() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    store
+        .append_alert(&alert_record(
+            "alert-open",
+            "finding-open",
+            AlertStatus::Open,
+        ))
+        .expect("open alert should persist");
+    store
+        .append_alert(&alert_record(
+            "alert-ack-1",
+            "finding-ack-1",
+            AlertStatus::Acknowledged,
+        ))
+        .expect("first acknowledged alert should persist");
+    store
+        .append_alert(&alert_record(
+            "alert-ack-2",
+            "finding-ack-2",
+            AlertStatus::Acknowledged,
+        ))
+        .expect("second acknowledged alert should persist");
+    store
+        .append_alert(&alert_record(
+            "alert-resolved",
+            "finding-resolved",
+            AlertStatus::Resolved,
+        ))
+        .expect("resolved alert should persist");
+
+    assert_eq!(
+        store
+            .count_acknowledged_alerts()
+            .expect("acknowledged alert count should succeed"),
+        2
+    );
+}
+
+#[test]
+fn restore_payload_enumeration_returns_exact_stored_paths() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+
+    let config_payload =
+        restore_payload_record("/tmp/openclaw.json", "aaa", "config", "{ agents: {} }");
+    let approvals_payload = restore_payload_record(
+        "/tmp/exec-approvals.json",
+        "bbb",
+        "config",
+        "{ mode: \"review\" }",
+    );
+    store
+        .replace_restore_payloads_for_source(
+            "config",
+            &[config_payload.clone(), approvals_payload.clone()],
+        )
+        .expect("restore payloads should persist");
+
+    let payloads = store
+        .list_restore_payloads()
+        .expect("restore payload enumeration should succeed");
+
+    assert_eq!(payloads, vec![approvals_payload, config_payload]);
+}
+
+#[test]
 fn notification_receipt_round_trips_by_alert_and_route() {
     let temp_dir = tempdir().expect("temp dir should be created");
     let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))

@@ -224,7 +224,7 @@ pub fn deliver_daily_digest_if_due_with_services(
     let cursor_key = digest_cursor_key(route_key);
     let cursor = store.notification_cursor(&cursor_key)?;
     let alerts =
-        store.list_alerts_created_after(cursor.as_ref().map_or(0, |cursor| cursor.unix_ms))?;
+        store.list_open_alerts_created_after(cursor.as_ref().map_or(0, |cursor| cursor.unix_ms))?;
 
     if alerts.is_empty() {
         return Ok(DailyDigestDeliveryReport {

@@ -48,6 +48,16 @@ pub enum AlertStatus {
     Resolved,
 }
 
+impl AlertStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Acknowledged => "acknowledged",
+            Self::Resolved => "resolved",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlertRecord {
     pub alert_id: String,

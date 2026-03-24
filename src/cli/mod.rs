@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::config::schema::{AlertStrategy, AppConfig, Strictness};
 use crate::config::store::{clawguard_dir_for_home, load_config, resolve_home_dir};
+use crate::daemon::recovery::restore_policy_file;
 use crate::daemon::watch::{
     build_watch_plan, NotifyWatchBackend, PollingWatchBackend, WatchBackend, WatchCycleOutcome,
     WatchEventOutcome, WatchIterationOutcome, WatchService, WatchWarning,
@@ -20,13 +21,20 @@ use crate::notify::{
     webhook::UreqWebhookTransport,
     DailyDigestDeliveryReport, NotificationServices, PendingAlertDeliveryReport,
 };
-use crate::scan::baseline::collect_restore_payload_candidates;
+use crate::scan::baseline::{
+    collect_restore_payload_candidates, restore_target_kind_for_path, RestoreTargetKind,
+};
 use crate::scan::{
     collect_scan_evidence, run_scan, runtime_not_detected_result, BaselineArtifact, ScanResult,
+    ScanSummary, Severity,
 };
 use crate::state::db::{StateStore, StateStoreConfig};
-use crate::state::model::{BaselineRecord, StateWarning};
-use crate::ui::findings::FindingsUiState;
+use crate::state::model::{AlertStatus, BaselineRecord, RestorePayloadRecord, StateWarning};
+use crate::ui::{
+    alerts::{AlertListItem, AlertsView},
+    findings::FindingsUiState,
+    status::{StatusAlertItem, StatusSnapshotSummary, StatusView},
+};
 use crate::wizard::{run_interactive, run_non_interactive, WizardAnswers};
 
 #[derive(Debug, Parser)]
@@ -53,11 +61,20 @@ pub struct Cli {
 enum Commands {
     /// Run a security scan.
     Scan,
+    /// Show the persisted runtime status view.
+    Status,
     /// Approve the current runtime state as the baseline used for drift detection.
     Baseline {
         #[command(subcommand)]
         command: BaselineCommands,
     },
+    /// Show persisted alerts or acknowledge one alert.
+    Alerts {
+        #[command(subcommand)]
+        command: Option<AlertsCommands>,
+    },
+    /// Restore one approved trust target from the saved baseline payload.
+    Trust(TrustArgs),
     /// Start the foreground watcher loop for the configured runtime.
     Watch(WatchArgs),
 }
@@ -66,6 +83,18 @@ enum Commands {
 enum BaselineCommands {
     /// Approve the current runtime state as the baseline.
     Approve,
+}
+
+#[derive(Debug, Subcommand)]
+enum AlertsCommands {
+    /// Acknowledge one persisted alert without deleting its history.
+    Ignore { alert_id: String },
+}
+
+#[derive(Debug, Args)]
+struct TrustArgs {
+    /// The allowlisted trust target name, such as `openclaw-config`.
+    target: String,
 }
 
 #[derive(Debug, Args)]
@@ -109,6 +138,49 @@ struct WatchCycleOutput {
 }
 
 #[derive(Debug, Serialize)]
+struct StatusOutput {
+    mode: &'static str,
+    open_alert_count: usize,
+    acknowledged_alert_count: usize,
+    latest_snapshot_summary: Option<ScanSummary>,
+    baseline_count: usize,
+    trust_targets: Vec<String>,
+    warnings: Vec<WarningOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct AlertsOutput {
+    mode: &'static str,
+    alerts: Vec<AlertSummaryOutput>,
+    warnings: Vec<WarningOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct AlertSummaryOutput {
+    alert_id: String,
+    status: AlertStatus,
+    severity: Severity,
+    path: String,
+    created_at_unix_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct AlertIgnoreOutput {
+    alert_id: String,
+    previous_status: AlertStatus,
+    new_status: AlertStatus,
+    warnings: Vec<WarningOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct TrustOutput {
+    trust_target: String,
+    restored_path: String,
+    resolved_alert_count: usize,
+    warnings: Vec<WarningOutput>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct WarningOutput {
     path: Option<String>,
     message: String,
@@ -120,25 +192,354 @@ struct BaselineApprovalSummary {
     restore_payload_count: usize,
 }
 
+const RECENT_ALERT_LIMIT: usize = 50;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrustTarget {
+    OpenClawConfig,
+    ExecApprovals,
+}
+
+impl TrustTarget {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "openclaw-config" => Some(Self::OpenClawConfig),
+            "exec-approvals" => Some(Self::ExecApprovals),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenClawConfig => "openclaw-config",
+            Self::ExecApprovals => "exec-approvals",
+        }
+    }
+}
+
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
         Some(Commands::Scan) => run_scan_command(&cli),
+        Some(Commands::Status) => run_status_command(&cli),
         Some(Commands::Baseline {
             command: BaselineCommands::Approve,
         }) => run_baseline_approve_command(&cli),
+        Some(Commands::Alerts { command: None }) => run_alerts_command(&cli),
+        Some(Commands::Alerts {
+            command: Some(AlertsCommands::Ignore { ref alert_id }),
+        }) => run_alert_ignore_command(&cli, alert_id),
+        Some(Commands::Trust(ref args)) => run_trust_command(&cli, args),
         Some(Commands::Watch(ref args)) => run_watch_command(&cli, args),
         None => run_root_command(&cli),
     }
 }
 
 fn run_root_command(cli: &Cli) -> ExitCode {
-    run_scan_flow(cli)
+    let discovery = discover_from_builtin_presets(&DiscoveryOptions::default());
+
+    match load_config() {
+        Ok(Some(config)) => {
+            if discovery.runtimes.is_empty() {
+                return render_runtime_not_detected(cli.json);
+            }
+
+            if cli.json {
+                return render_scan_output(&config, &discovery, true);
+            }
+
+            run_status_command_with_home(cli, &resolve_home_dir())
+        }
+        Ok(None) => {
+            if discovery.runtimes.is_empty() {
+                return render_runtime_not_detected(cli.json);
+            }
+
+            run_scan_flow(cli)
+        }
+        Err(error) => {
+            eprintln!("failed to load config: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn run_scan_command(cli: &Cli) -> ExitCode {
     run_scan_flow(cli)
+}
+
+fn run_status_command(cli: &Cli) -> ExitCode {
+    if load_saved_config_for_operational_command("status").is_err() {
+        return ExitCode::FAILURE;
+    }
+    let discovery = discover_from_builtin_presets(&DiscoveryOptions::default());
+    if !runtime_available_for_operational_command(&discovery, "status") {
+        return ExitCode::FAILURE;
+    }
+
+    run_status_command_with_home(cli, &resolve_home_dir())
+}
+
+fn run_status_command_with_home(cli: &Cli, home_dir: &Path) -> ExitCode {
+    let state = match open_state_store_for_home(home_dir) {
+        Ok(state) => state,
+        Err(code) => return code,
+    };
+    let warnings: Vec<_> = state
+        .warnings
+        .iter()
+        .map(warning_output_from_state)
+        .collect();
+    let open_alerts = match state.store.list_open_alerts() {
+        Ok(alerts) => alerts,
+        Err(error) => {
+            eprintln!("failed to load open alerts: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let acknowledged_alert_count = match state.store.count_acknowledged_alerts() {
+        Ok(count) => count,
+        Err(error) => {
+            eprintln!("failed to count acknowledged alerts: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let latest_snapshot_summary = match state.store.latest_scan_snapshot() {
+        Ok(snapshot) => snapshot.map(|snapshot| snapshot.summary),
+        Err(error) => {
+            eprintln!("failed to load latest scan snapshot: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let baseline_count = match state.store.list_baselines() {
+        Ok(baselines) => baselines.len(),
+        Err(error) => {
+            eprintln!("failed to load approved baselines: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let trust_targets = match state.store.list_restore_payloads() {
+        Ok(payloads) => available_trust_targets(&payloads),
+        Err(error) => {
+            eprintln!("failed to enumerate approved restore payloads: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let view = StatusView {
+        open_alerts: open_alerts
+            .iter()
+            .map(|alert| StatusAlertItem {
+                alert_id: alert.alert_id.clone(),
+                severity: alert.finding.severity,
+                path: alert.finding.path.clone(),
+            })
+            .collect(),
+        acknowledged_alert_count,
+        latest_snapshot_summary: latest_snapshot_summary.clone().map(|summary| {
+            StatusSnapshotSummary {
+                total_findings: summary.total_findings,
+                highest_severity: summary.highest_severity,
+            }
+        }),
+        baseline_count,
+        trust_targets: trust_targets.clone(),
+        command_hints: status_command_hints(
+            baseline_count,
+            latest_snapshot_summary.is_some(),
+            !open_alerts.is_empty(),
+            &trust_targets,
+        ),
+    };
+    let output = StatusOutput {
+        mode: "status",
+        open_alert_count: open_alerts.len(),
+        acknowledged_alert_count,
+        latest_snapshot_summary,
+        baseline_count,
+        trust_targets,
+        warnings,
+    };
+
+    render_status_output(cli.json, &output, &view)
+}
+
+fn run_alerts_command(cli: &Cli) -> ExitCode {
+    if load_saved_config_for_operational_command("alerts").is_err() {
+        return ExitCode::FAILURE;
+    }
+
+    let state = match open_state_store_for_home(&resolve_home_dir()) {
+        Ok(state) => state,
+        Err(code) => return code,
+    };
+    let warnings: Vec<_> = state
+        .warnings
+        .iter()
+        .map(warning_output_from_state)
+        .collect();
+    let alerts = match state.store.list_recent_alerts(RECENT_ALERT_LIMIT) {
+        Ok(alerts) => alerts,
+        Err(error) => {
+            eprintln!("failed to load recent alerts: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let view = AlertsView {
+        alerts: alerts
+            .iter()
+            .map(|alert| AlertListItem {
+                alert_id: alert.alert_id.clone(),
+                status: alert.status,
+                severity: alert.finding.severity,
+                path: alert.finding.path.clone(),
+            })
+            .collect(),
+        command_hints: vec![
+            "clawguard alerts ignore <alert-id>".to_string(),
+            "clawguard status".to_string(),
+        ],
+    };
+    let output = AlertsOutput {
+        mode: "alerts",
+        alerts: alerts
+            .iter()
+            .map(|alert| AlertSummaryOutput {
+                alert_id: alert.alert_id.clone(),
+                status: alert.status,
+                severity: alert.finding.severity,
+                path: alert.finding.path.clone(),
+                created_at_unix_ms: alert.created_at_unix_ms,
+            })
+            .collect(),
+        warnings: warnings.clone(),
+    };
+
+    render_alerts_output(cli.json, &output, &view, &warnings)
+}
+
+fn run_alert_ignore_command(cli: &Cli, alert_id: &str) -> ExitCode {
+    if load_saved_config_for_operational_command("alerts ignore").is_err() {
+        return ExitCode::FAILURE;
+    }
+
+    let mut state = match open_state_store_for_home(&resolve_home_dir()) {
+        Ok(state) => state,
+        Err(code) => return code,
+    };
+    let warnings: Vec<_> = state
+        .warnings
+        .iter()
+        .map(warning_output_from_state)
+        .collect();
+    let existing_alert = match state.store.alert_by_id(alert_id) {
+        Ok(alert) => alert,
+        Err(error) => {
+            eprintln!("failed to load alert: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(existing_alert) = existing_alert else {
+        eprintln!("no stored alert exists with id {alert_id}");
+        return ExitCode::FAILURE;
+    };
+    if existing_alert.status == AlertStatus::Resolved {
+        eprintln!("alert {alert_id} is already resolved");
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = state
+        .store
+        .update_alert_status(alert_id, AlertStatus::Acknowledged)
+    {
+        eprintln!("failed to update alert status: {error}");
+        return ExitCode::FAILURE;
+    }
+
+    let output = AlertIgnoreOutput {
+        alert_id: alert_id.to_string(),
+        previous_status: existing_alert.status,
+        new_status: AlertStatus::Acknowledged,
+        warnings: warnings.clone(),
+    };
+
+    render_alert_ignore_output(cli.json, &output, &warnings)
+}
+
+fn run_trust_command(cli: &Cli, args: &TrustArgs) -> ExitCode {
+    if load_saved_config_for_operational_command("trust").is_err() {
+        return ExitCode::FAILURE;
+    }
+    let discovery = discover_from_builtin_presets(&DiscoveryOptions::default());
+    if !runtime_available_for_operational_command(&discovery, "trust") {
+        return ExitCode::FAILURE;
+    }
+
+    let Some(target) = TrustTarget::parse(&args.target) else {
+        eprintln!(
+            "unknown trust target `{}`; supported trust targets: openclaw-config, exec-approvals",
+            args.target
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let mut state = match open_state_store_for_home(&resolve_home_dir()) {
+        Ok(state) => state,
+        Err(code) => return code,
+    };
+    let warnings: Vec<_> = state
+        .warnings
+        .iter()
+        .map(warning_output_from_state)
+        .collect();
+    let payloads = match state.store.list_restore_payloads() {
+        Ok(payloads) => payloads,
+        Err(error) => {
+            eprintln!("failed to enumerate approved restore payloads: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(restored_path) = restore_path_for_target(&payloads, target) else {
+        eprintln!("no approved restore payload exists for {}", target.as_str());
+        return ExitCode::FAILURE;
+    };
+
+    if let Err(error) = restore_policy_file(&state.store, Path::new(&restored_path)) {
+        eprintln!("failed to trust {}: {error}", target.as_str());
+        return ExitCode::FAILURE;
+    }
+
+    let matching_alert_ids: Vec<_> = match state.store.list_unresolved_alerts() {
+        Ok(alerts) => alerts
+            .into_iter()
+            .filter(|alert| {
+                alert.finding.category == crate::scan::FindingCategory::Drift
+                    && alert.finding.path == restored_path
+            })
+            .map(|alert| alert.alert_id)
+            .collect(),
+        Err(error) => {
+            eprintln!("failed to load unresolved alerts: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for alert_id in &matching_alert_ids {
+        if let Err(error) = state
+            .store
+            .update_alert_status(alert_id, AlertStatus::Resolved)
+        {
+            eprintln!("failed to resolve restored drift alert {alert_id}: {error}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let output = TrustOutput {
+        trust_target: target.as_str().to_string(),
+        restored_path,
+        resolved_alert_count: matching_alert_ids.len(),
+        warnings,
+    };
+
+    render_trust_output(cli.json, &output)
 }
 
 fn run_baseline_approve_command(cli: &Cli) -> ExitCode {
@@ -440,6 +841,102 @@ fn render_baseline_approve_output(json: bool, output: &BaselineApproveOutput) ->
     ExitCode::SUCCESS
 }
 
+fn render_status_output(json: bool, output: &StatusOutput, view: &StatusView) -> ExitCode {
+    if json {
+        match serde_json::to_string_pretty(output) {
+            Ok(serialized) => println!("{serialized}"),
+            Err(error) => {
+                eprintln!("failed to serialize status output: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        for warning in &output.warnings {
+            eprintln!("warning: {}", warning.message);
+        }
+        println!("{}", view.render());
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn render_alerts_output(
+    json: bool,
+    output: &AlertsOutput,
+    view: &AlertsView,
+    warnings: &[WarningOutput],
+) -> ExitCode {
+    if json {
+        match serde_json::to_string_pretty(output) {
+            Ok(serialized) => println!("{serialized}"),
+            Err(error) => {
+                eprintln!("failed to serialize alerts output: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        for warning in warnings {
+            eprintln!("warning: {}", warning.message);
+        }
+        println!("{}", view.render());
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn render_alert_ignore_output(
+    json: bool,
+    output: &AlertIgnoreOutput,
+    warnings: &[WarningOutput],
+) -> ExitCode {
+    if json {
+        match serde_json::to_string_pretty(output) {
+            Ok(serialized) => println!("{serialized}"),
+            Err(error) => {
+                eprintln!("failed to serialize alert update output: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        for warning in warnings {
+            eprintln!("warning: {}", warning.message);
+        }
+        println!(
+            "acknowledged alert {} (previously {})",
+            output.alert_id,
+            output.previous_status.as_str()
+        );
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn render_trust_output(json: bool, output: &TrustOutput) -> ExitCode {
+    if json {
+        match serde_json::to_string_pretty(output) {
+            Ok(serialized) => println!("{serialized}"),
+            Err(error) => {
+                eprintln!("failed to serialize trust output: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        for warning in &output.warnings {
+            eprintln!("warning: {}", warning.message);
+        }
+        println!(
+            "restored approved payload for {} to {}",
+            output.trust_target, output.restored_path
+        );
+        println!(
+            "resolved {} matching drift alerts",
+            output.resolved_alert_count
+        );
+    }
+
+    ExitCode::SUCCESS
+}
+
 fn render_watch_iteration_output(json: bool, output: &WatchIterationOutput) -> Result<(), String> {
     if json {
         let serialized = serde_json::to_string(output)
@@ -529,6 +1026,81 @@ fn open_state_store_for_home(
 
 fn state_db_path_for_home(home_dir: &Path) -> PathBuf {
     clawguard_dir_for_home(home_dir).join("state.db")
+}
+
+fn status_command_hints(
+    baseline_count: usize,
+    has_snapshot: bool,
+    has_open_alerts: bool,
+    trust_targets: &[String],
+) -> Vec<String> {
+    let mut hints = Vec::new();
+
+    push_hint(&mut hints, "clawguard scan");
+    if baseline_count == 0 {
+        push_hint(&mut hints, "clawguard baseline approve");
+    }
+    if !has_snapshot || baseline_count == 0 {
+        push_hint(&mut hints, "clawguard watch");
+    }
+    push_hint(&mut hints, "clawguard alerts");
+    if has_open_alerts {
+        push_hint(&mut hints, "clawguard alerts ignore <alert-id>");
+    }
+    for target in trust_targets {
+        push_hint(&mut hints, &format!("clawguard trust {target}"));
+    }
+
+    hints
+}
+
+fn push_hint(hints: &mut Vec<String>, hint: &str) {
+    if hints.iter().any(|existing| existing == hint) {
+        return;
+    }
+
+    hints.push(hint.to_string());
+}
+
+fn available_trust_targets(payloads: &[RestorePayloadRecord]) -> Vec<String> {
+    payloads
+        .iter()
+        .filter_map(|payload| {
+            restore_target_kind_for_path(&payload.path, &payload.source_label).map(
+                |kind| match kind {
+                    RestoreTargetKind::OpenClawConfig => TrustTarget::OpenClawConfig.as_str(),
+                    RestoreTargetKind::ExecApprovals => TrustTarget::ExecApprovals.as_str(),
+                },
+            )
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn restore_path_for_target(
+    payloads: &[RestorePayloadRecord],
+    target: TrustTarget,
+) -> Option<String> {
+    payloads
+        .iter()
+        .find(|payload| {
+            matches!(
+                (
+                    target,
+                    restore_target_kind_for_path(&payload.path, &payload.source_label)
+                ),
+                (
+                    TrustTarget::OpenClawConfig,
+                    Some(RestoreTargetKind::OpenClawConfig)
+                ) | (
+                    TrustTarget::ExecApprovals,
+                    Some(RestoreTargetKind::ExecApprovals)
+                )
+            )
+        })
+        .map(|payload| payload.path.clone())
 }
 
 fn approve_baselines_from_artifacts(

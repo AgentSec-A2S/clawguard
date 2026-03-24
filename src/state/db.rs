@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, Error as SqlError, ErrorCode, OptionalExtension};
+use rusqlite::{Connection, Error as SqlError, ErrorCode, OptionalExtension, Params};
 
 use crate::scan::Finding;
 
@@ -494,48 +494,44 @@ impl StateStore {
     }
 
     pub fn list_unresolved_alerts(&self) -> Result<Vec<AlertRecord>, StateStoreError> {
-        let mut statement = self.conn.prepare(
+        self.query_alerts(
             "SELECT alert_id, finding_id, status, created_at_unix_ms, finding_json
              FROM alerts
              WHERE status IN ('open', 'acknowledged')
              ORDER BY created_at_unix_ms ASC, alert_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| {
-            let status_text: String = row.get(2)?;
-            let finding_json: String = row.get(4)?;
-            let finding = serde_json::from_str(&finding_json).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    4,
-                    rusqlite::types::Type::Text,
-                    Box::new(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("failed to deserialize alert finding: {error}"),
-                    )),
-                )
-            })?;
+            [],
+        )
+    }
 
-            Ok(AlertRecord {
-                alert_id: row.get(0)?,
-                finding_id: row.get(1)?,
-                status: status_from_str(&status_text)?,
-                created_at_unix_ms: row.get::<_, i64>(3)? as u64,
-                finding,
-            })
-        })?;
-
-        let mut alerts = Vec::new();
-        for row in rows {
-            alerts.push(row?);
+    pub fn list_recent_alerts(&self, limit: usize) -> Result<Vec<AlertRecord>, StateStoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
         }
 
-        Ok(alerts)
+        self.query_alerts(
+            "SELECT alert_id, finding_id, status, created_at_unix_ms, finding_json
+             FROM alerts
+             ORDER BY created_at_unix_ms DESC, alert_id DESC
+             LIMIT ?1",
+            [i64::try_from(limit).unwrap_or(i64::MAX)],
+        )
+    }
+
+    pub fn list_open_alerts(&self) -> Result<Vec<AlertRecord>, StateStoreError> {
+        self.query_alerts(
+            "SELECT alert_id, finding_id, status, created_at_unix_ms, finding_json
+             FROM alerts
+             WHERE status = 'open'
+             ORDER BY created_at_unix_ms ASC, alert_id ASC",
+            [],
+        )
     }
 
     pub fn list_undelivered_alerts_for_route(
         &self,
         delivery_route: &str,
     ) -> Result<Vec<AlertRecord>, StateStoreError> {
-        let mut statement = self.conn.prepare(
+        self.query_alerts(
             "SELECT a.alert_id, a.finding_id, a.status, a.created_at_unix_ms, a.finding_json
              FROM alerts a
              LEFT JOIN notification_receipts r
@@ -544,77 +540,61 @@ impl StateStore {
              WHERE a.status IN ('open', 'acknowledged')
                AND r.alert_id IS NULL
              ORDER BY a.created_at_unix_ms ASC, a.alert_id ASC",
-        )?;
-        let rows = statement.query_map([delivery_route], |row| {
-            let status_text: String = row.get(2)?;
-            let finding_json: String = row.get(4)?;
-            let finding = serde_json::from_str(&finding_json).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    4,
-                    rusqlite::types::Type::Text,
-                    Box::new(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("failed to deserialize alert finding: {error}"),
-                    )),
-                )
-            })?;
-
-            Ok(AlertRecord {
-                alert_id: row.get(0)?,
-                finding_id: row.get(1)?,
-                status: status_from_str(&status_text)?,
-                created_at_unix_ms: row.get::<_, i64>(3)? as u64,
-                finding,
-            })
-        })?;
-
-        let mut alerts = Vec::new();
-        for row in rows {
-            alerts.push(row?);
-        }
-
-        Ok(alerts)
+            [delivery_route],
+        )
     }
 
     pub fn list_alerts_created_after(
         &self,
         unix_ms_exclusive: u64,
     ) -> Result<Vec<AlertRecord>, StateStoreError> {
-        let mut statement = self.conn.prepare(
+        self.query_alerts(
             "SELECT alert_id, finding_id, status, created_at_unix_ms, finding_json
              FROM alerts
              WHERE created_at_unix_ms > ?1
              ORDER BY created_at_unix_ms ASC, alert_id ASC",
+            [unix_ms_exclusive as i64],
+        )
+    }
+
+    pub fn list_open_alerts_created_after(
+        &self,
+        unix_ms_exclusive: u64,
+    ) -> Result<Vec<AlertRecord>, StateStoreError> {
+        self.query_alerts(
+            "SELECT alert_id, finding_id, status, created_at_unix_ms, finding_json
+             FROM alerts
+             WHERE status = 'open'
+               AND created_at_unix_ms > ?1
+             ORDER BY created_at_unix_ms ASC, alert_id ASC",
+            [unix_ms_exclusive as i64],
+        )
+    }
+
+    pub fn alert_by_id(&self, alert_id: &str) -> Result<Option<AlertRecord>, StateStoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT alert_id, finding_id, status, created_at_unix_ms, finding_json
+             FROM alerts
+             WHERE alert_id = ?1
+             LIMIT 1",
         )?;
-        let rows = statement.query_map([unix_ms_exclusive as i64], |row| {
-            let status_text: String = row.get(2)?;
-            let finding_json: String = row.get(4)?;
-            let finding = serde_json::from_str(&finding_json).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    4,
-                    rusqlite::types::Type::Text,
-                    Box::new(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("failed to deserialize alert finding: {error}"),
-                    )),
-                )
-            })?;
+        let mut rows = statement.query([alert_id])?;
 
-            Ok(AlertRecord {
-                alert_id: row.get(0)?,
-                finding_id: row.get(1)?,
-                status: status_from_str(&status_text)?,
-                created_at_unix_ms: row.get::<_, i64>(3)? as u64,
-                finding,
-            })
-        })?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
 
-        let mut alerts = Vec::new();
-        for row in rows {
-            alerts.push(row?);
-        }
+        Ok(Some(alert_record_from_row(row)?))
+    }
 
-        Ok(alerts)
+    pub fn count_acknowledged_alerts(&self) -> Result<usize, StateStoreError> {
+        let count = self.conn.query_row(
+            "SELECT COUNT(*) FROM alerts WHERE status = 'acknowledged'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+
+        Ok(count.max(0) as usize)
     }
 
     pub fn update_alert_status(
@@ -720,8 +700,48 @@ impl StateStore {
         }))
     }
 
+    pub fn list_restore_payloads(&self) -> Result<Vec<RestorePayloadRecord>, StateStoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT path, sha256, captured_at_unix_ms, source_label, content
+             FROM restore_payloads
+             ORDER BY path ASC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(RestorePayloadRecord {
+                path: row.get(0)?,
+                sha256: row.get(1)?,
+                captured_at_unix_ms: row.get::<_, i64>(2)? as u64,
+                source_label: row.get(3)?,
+                content: row.get(4)?,
+            })
+        })?;
+
+        let mut payloads = Vec::new();
+        for row in rows {
+            payloads.push(row?);
+        }
+
+        Ok(payloads)
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    fn query_alerts<P: Params>(
+        &self,
+        query: &str,
+        params: P,
+    ) -> Result<Vec<AlertRecord>, StateStoreError> {
+        let mut statement = self.conn.prepare(query)?;
+        let rows = statement.query_map(params, alert_record_from_row)?;
+
+        let mut alerts = Vec::new();
+        for row in rows {
+            alerts.push(row?);
+        }
+
+        Ok(alerts)
     }
 
     fn run_write_with_retry<T, F>(&mut self, mut operation: F) -> Result<T, StateStoreError>
@@ -927,11 +947,7 @@ fn is_corrupt_database_error(error: &StateStoreError) -> bool {
 }
 
 fn status_as_str(status: AlertStatus) -> &'static str {
-    match status {
-        AlertStatus::Open => "open",
-        AlertStatus::Acknowledged => "acknowledged",
-        AlertStatus::Resolved => "resolved",
-    }
+    status.as_str()
 }
 
 fn status_from_str(status: &str) -> Result<AlertStatus, rusqlite::Error> {
@@ -948,6 +964,29 @@ fn status_from_str(status: &str) -> Result<AlertStatus, rusqlite::Error> {
             )),
         )),
     }
+}
+
+fn alert_record_from_row(row: &rusqlite::Row<'_>) -> Result<AlertRecord, rusqlite::Error> {
+    let status_text: String = row.get(2)?;
+    let finding_json: String = row.get(4)?;
+    let finding = serde_json::from_str(&finding_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            rusqlite::types::Type::Text,
+            Box::new(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to deserialize alert finding: {error}"),
+            )),
+        )
+    })?;
+
+    Ok(AlertRecord {
+        alert_id: row.get(0)?,
+        finding_id: row.get(1)?,
+        status: status_from_str(&status_text)?,
+        created_at_unix_ms: row.get::<_, i64>(3)? as u64,
+        finding,
+    })
 }
 
 fn classify_sqlite_error(context: &str, error: rusqlite::Error) -> StateStoreError {

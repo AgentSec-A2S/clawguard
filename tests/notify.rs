@@ -522,6 +522,68 @@ fn daily_digest_summarizes_new_alerts_since_cursor() {
 }
 
 #[test]
+fn daily_digest_excludes_acknowledged_alerts_from_the_summary() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+    let config = log_only_config();
+    let desktop = FakeDesktopNotifier::default();
+    let webhook = FakeWebhookTransport::success();
+    let services = NotificationServices {
+        platform: PlatformSnapshot::default(),
+        desktop_notifier: &desktop,
+        webhook_transport: &webhook,
+    };
+    let open_alert = sample_alert_with(
+        "alert:test:open",
+        "baseline:modified:/tmp/.openclaw/openclaw.json",
+        "/tmp/.openclaw/openclaw.json",
+        Severity::High,
+        1_763_950_100_000,
+    );
+    let mut acknowledged_alert = sample_alert_with(
+        "alert:test:ack",
+        "baseline:modified:/tmp/.openclaw/exec-approvals.json",
+        "/tmp/.openclaw/exec-approvals.json",
+        Severity::Critical,
+        1_763_950_200_000,
+    );
+    acknowledged_alert.status = AlertStatus::Acknowledged;
+
+    store
+        .append_alert(&open_alert)
+        .expect("open alert should persist");
+    store
+        .append_alert(&acknowledged_alert)
+        .expect("acknowledged alert should persist");
+    store
+        .set_notification_cursor(&NotificationCursorRecord {
+            cursor_key: "daily_digest:log_only".to_string(),
+            unix_ms: 1_763_949_000_000,
+        })
+        .expect("digest cursor should persist");
+
+    let report = deliver_daily_digest_if_due_with_services(
+        &mut store,
+        &config,
+        1_764_050_000_000,
+        &services,
+    )
+    .expect("digest delivery should succeed");
+
+    assert!(report.handled);
+    assert_eq!(report.alert_count, 1);
+    assert!(
+        report
+            .log_line
+            .as_deref()
+            .is_some_and(|line| line.contains("1 new alert") && !line.contains("2 new alerts")),
+        "daily digest should ignore acknowledged alerts instead of re-surfacing them as active noise"
+    );
+}
+
+#[test]
 fn daily_digest_failure_does_not_advance_cursor() {
     let temp_dir = tempdir().expect("temp dir should be created");
     let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
