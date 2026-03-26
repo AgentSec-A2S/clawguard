@@ -422,3 +422,190 @@ fn notify_webhook_rejects_scheme_only_url() {
         "should reject URL without host: {err}"
     );
 }
+
+// -- auto-detect chat IDs from OpenClaw config --
+
+fn write_openclaw_telegram_config(home_dir: &Path, json5_content: &str) {
+    let state_dir = home_dir.join(".openclaw");
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(state_dir.join("openclaw.json"), json5_content).unwrap();
+}
+
+#[test]
+fn notify_telegram_auto_detects_single_chat_id() {
+    let (_temp, home_dir) = prepare_openclaw_home();
+    bootstrap_saved_config(&home_dir);
+
+    // Write OpenClaw config with a single defaultTo
+    write_openclaw_telegram_config(
+        &home_dir,
+        r#"{
+            "channels": {
+                "telegram": {
+                    "defaultTo": "555444333"
+                }
+            }
+        }"#,
+    );
+
+    // Run telegram without explicit chat ID
+    let assert = Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["notify", "telegram"])
+        .assert()
+        .success();
+
+    let config = read_config_toml(&home_dir);
+    assert!(
+        config.contains("555444333"),
+        "should auto-detect chat ID from defaultTo: {config}"
+    );
+
+    let out = stdout_text(&assert);
+    assert!(
+        out.contains("555444333"),
+        "should show auto-detected ID: {out}"
+    );
+}
+
+#[test]
+fn notify_telegram_shows_multiple_ids_and_fails() {
+    let (_temp, home_dir) = prepare_openclaw_home();
+    bootstrap_saved_config(&home_dir);
+
+    write_openclaw_telegram_config(
+        &home_dir,
+        r#"{
+            "channels": {
+                "telegram": {
+                    "defaultTo": "111",
+                    "allowFrom": [222, 333]
+                }
+            }
+        }"#,
+    );
+
+    let assert = Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["notify", "telegram"])
+        .assert()
+        .failure();
+
+    let err = stderr_text(&assert);
+    assert!(err.contains("111"), "should list first ID: {err}");
+    assert!(err.contains("222"), "should list second ID: {err}");
+    assert!(
+        err.contains("Re-run"),
+        "should tell user to re-run with explicit ID: {err}"
+    );
+}
+
+#[test]
+fn notify_telegram_json_returns_detected_ids_on_multiple() {
+    let (_temp, home_dir) = prepare_openclaw_home();
+    bootstrap_saved_config(&home_dir);
+
+    // Two defaultTo values (top-level + account) → ambiguous, no auto-select
+    write_openclaw_telegram_config(
+        &home_dir,
+        r#"{
+            "channels": {
+                "telegram": {
+                    "defaultTo": "100",
+                    "accounts": {
+                        "bot-2": {
+                            "defaultTo": "200"
+                        }
+                    }
+                }
+            }
+        }"#,
+    );
+
+    let assert = Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["notify", "telegram", "--json"])
+        .assert()
+        .failure();
+
+    let out = stdout_text(&assert);
+    let json: serde_json::Value = serde_json::from_str(&out).expect("should be valid JSON");
+    assert!(
+        json["detected_chat_ids"].is_array(),
+        "should include detected_chat_ids array"
+    );
+    assert_eq!(
+        json["detected_chat_ids"].as_array().unwrap().len(),
+        2,
+        "should detect 2 IDs"
+    );
+}
+
+#[test]
+fn notify_telegram_apply_writes_openclaw_config() {
+    let (_temp, home_dir) = prepare_openclaw_home();
+    bootstrap_saved_config(&home_dir);
+
+    Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["notify", "telegram", "999888777", "--apply"])
+        .assert()
+        .success();
+
+    let openclaw_config =
+        fs::read_to_string(home_dir.join(".openclaw").join("openclaw.json")).unwrap();
+    assert!(
+        openclaw_config.contains("clawguard"),
+        "should write clawguard plugin entry: {openclaw_config}"
+    );
+    assert!(
+        openclaw_config.contains("999888777"),
+        "should include chat ID in plugin config: {openclaw_config}"
+    );
+
+    // Verify backup was created
+    let backup = home_dir
+        .join(".openclaw")
+        .join("openclaw.json.clawguard-backup");
+    assert!(backup.exists(), "should create backup file");
+}
+
+#[test]
+fn notify_telegram_apply_preserves_existing_config() {
+    let (_temp, home_dir) = prepare_openclaw_home();
+    bootstrap_saved_config(&home_dir);
+
+    // Read original config
+    let original = fs::read_to_string(home_dir.join(".openclaw").join("openclaw.json")).unwrap();
+
+    Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["notify", "telegram", "123", "--apply"])
+        .assert()
+        .success();
+
+    let updated = fs::read_to_string(home_dir.join(".openclaw").join("openclaw.json")).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&updated).expect("valid JSON");
+
+    // Original config sections should still exist
+    assert!(
+        parsed.get("plugins").is_some(),
+        "should have plugins section"
+    );
+    // Backup should contain original content
+    let backup = fs::read_to_string(
+        home_dir
+            .join(".openclaw")
+            .join("openclaw.json.clawguard-backup"),
+    )
+    .unwrap();
+    assert_eq!(
+        backup, original,
+        "backup should contain original file content"
+    );
+}
