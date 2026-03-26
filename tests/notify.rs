@@ -118,6 +118,7 @@ fn webhook_failure_returns_warning_without_claiming_success() {
         alert_strategy: AlertStrategy::Webhook,
         webhook_url: Some("https://example.invalid/hook".to_string()),
         max_file_size_bytes: 1024 * 1024,
+        telegram_chat_id: None,
         sse: Default::default(),
     };
     let desktop = FakeDesktopNotifier::default();
@@ -794,6 +795,7 @@ fn desktop_config() -> AppConfig {
         alert_strategy: AlertStrategy::Desktop,
         webhook_url: None,
         max_file_size_bytes: 1024 * 1024,
+        telegram_chat_id: None,
         sse: Default::default(),
     }
 }
@@ -805,6 +807,7 @@ fn log_only_config() -> AppConfig {
         alert_strategy: AlertStrategy::LogOnly,
         webhook_url: None,
         max_file_size_bytes: 1024 * 1024,
+        telegram_chat_id: None,
         sse: Default::default(),
     }
 }
@@ -816,6 +819,7 @@ fn webhook_config(webhook_url: Option<&str>) -> AppConfig {
         alert_strategy: AlertStrategy::Webhook,
         webhook_url: webhook_url.map(str::to_string),
         max_file_size_bytes: 1024 * 1024,
+        telegram_chat_id: None,
         sse: Default::default(),
     }
 }

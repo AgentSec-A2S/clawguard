@@ -1474,6 +1474,7 @@ fn app_config() -> AppConfig {
         alert_strategy: AlertStrategy::Desktop,
         webhook_url: None,
         max_file_size_bytes: 1024 * 1024,
+        telegram_chat_id: None,
         sse: Default::default(),
     }
 }
