@@ -284,11 +284,17 @@ Add to your `openclaw.json`:
 
 Available slash commands in your messaging channel:
 
-| Command | Description |
-|---------|-------------|
-| `/clawguard_feed` | Toggle alert feed on/off |
-| `/clawguard_status` | Show current security status |
-| `/clawguard_alerts` | Show 10 most recent alerts |
+| Command | Description | Status |
+|---------|-------------|--------|
+| `/clawguard_feed` | Toggle alert feed on/off | V1 |
+| `/clawguard_status` | Show current security status | V1 |
+| `/clawguard_alerts` | Show 10 most recent alerts | V1 |
+| `/clawguard_ignore <id>` | Acknowledge an alert from chat | V1.5 |
+| `/clawguard_trust <target>` | Restore approved config from chat | V1.5 |
+| `/clawguard_scan` | Trigger an immediate rescan | V1.5 |
+| `/clawguard_config <key> <value>` | Update ClawGuard config remotely | V1.5 |
+
+V1 commands are read-only. V1.5 will add mutation commands backed by an authenticated local API (`POST /command` with Unix socket + token).
 
 Alert messages look like:
 

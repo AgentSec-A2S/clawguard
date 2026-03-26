@@ -292,11 +292,17 @@ curl http://127.0.0.1:37776/health
 
 消息频道中可用的 slash 命令：
 
-| 命令 | 说明 |
-|------|------|
-| `/clawguard_feed` | 开关告警推送 |
-| `/clawguard_status` | 查看当前安全状态 |
-| `/clawguard_alerts` | 查看最近 10 条告警 |
+| 命令 | 说明 | 状态 |
+|------|------|------|
+| `/clawguard_feed` | 开关告警推送 | V1 |
+| `/clawguard_status` | 查看当前安全状态 | V1 |
+| `/clawguard_alerts` | 查看最近 10 条告警 | V1 |
+| `/clawguard_ignore <id>` | 在聊天中确认告警 | V1.5 |
+| `/clawguard_trust <target>` | 在聊天中恢复批准配置 | V1.5 |
+| `/clawguard_scan` | 触发即时重新扫描 | V1.5 |
+| `/clawguard_config <key> <value>` | 远程更新 ClawGuard 配置 | V1.5 |
+
+V1 命令为只读。V1.5 将增加操作性命令，通过认证的本地 API（`POST /command`，Unix socket + token）执行。
 
 告警消息样式：
 
