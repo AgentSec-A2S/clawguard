@@ -201,8 +201,12 @@ cargo build --release
   - switches to webhook notifications with URL validation
 - `clawguard notify telegram [chat-id]`
   - enables SSE server and configures Telegram alerts via OpenClaw plugin
-  - if chat-id is omitted, reuses the previously saved value
+  - if chat-id is omitted, auto-detects from OpenClaw's `channels.telegram` config (`defaultTo`, `groups`, `direct`, `allowFrom`)
+  - if multiple IDs are detected, prints a numbered list for the user to choose from
+  - if exactly one ID is found, auto-selects it
+  - falls back to previously saved value if no OpenClaw config exists
   - prints a ready-to-paste `openclaw.json` plugin config snippet
+  - `--apply` writes the plugin config into `openclaw.json` automatically (creates backup first)
 - `clawguard notify off`
   - disables all notifications (log-only) and stops the SSE server
 - `clawguard watch`
@@ -227,7 +231,9 @@ clawguard scan
 clawguard baseline approve
 clawguard trust openclaw-config
 clawguard notify
-clawguard notify telegram 123456789
+clawguard notify telegram                          # auto-detect chat ID
+clawguard notify telegram 123456789                # explicit chat ID
+clawguard notify telegram 123456789 --apply        # auto-write to openclaw.json
 clawguard notify webhook https://hooks.example.com/clawguard
 clawguard notify off
 clawguard watch --iterations 1

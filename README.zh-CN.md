@@ -212,8 +212,12 @@ cargo build --release
   - 切换为 webhook 通知，自动验证 URL 格式
 - `clawguard notify telegram [chat-id]`
   - 启用 SSE 服务器，配置通过 OpenClaw 插件的 Telegram 告警
-  - 省略 chat-id 时复用之前保存的值
+  - 省略 chat-id 时自动从 OpenClaw 的 `channels.telegram` 配置中检测（`defaultTo`、`groups`、`direct`、`allowFrom`）
+  - 检测到多个 ID 时显示编号列表供用户选择
+  - 只检测到一个 ID 时自动选用
+  - 无 OpenClaw 配置时回退到之前保存的值
   - 输出可直接粘贴到 `openclaw.json` 的插件配置片段
+  - `--apply` 自动将插件配置写入 `openclaw.json`（写入前自动创建备份）
 - `clawguard notify off`
   - 关闭所有通知（仅日志输出）并停止 SSE 服务器
 - `clawguard watch`
@@ -237,7 +241,9 @@ clawguard scan
 clawguard baseline approve
 clawguard trust openclaw-config
 clawguard notify
-clawguard notify telegram 123456789
+clawguard notify telegram                          # 自动检测 chat ID
+clawguard notify telegram 123456789                # 手动指定 chat ID
+clawguard notify telegram 123456789 --apply        # 自动写入 openclaw.json
 clawguard notify webhook https://hooks.example.com/clawguard
 clawguard notify off
 clawguard watch --iterations 1
