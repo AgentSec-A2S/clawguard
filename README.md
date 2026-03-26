@@ -73,7 +73,7 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - handles full-path executables (`/bin/rm`, `/usr/bin/env bash`) and expands shell sink detection to `sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`
   - token-aware, quote-aware command matching prevents false positives on quoted strings
   - approval drift: detects policy weakening (`askFallback` relaxed, dangerous executables or interpreters in allowlist)
-  - V1 is alert-only with no real-time command blocking (see [Task 14A research](../docs/plans/2026-03-24-clawguard-task14a-tripwire-research.md))
+  - V1 is alert-only with no real-time command blocking — OpenClaw's exec-approval system is a closed trust boundary with no stable external interception API
 - `Skills scan`
   - looks for shell, network, and local-install behaviors that deserve human review
 - `MCP scan`
