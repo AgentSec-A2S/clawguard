@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use crate::scan::{Finding, FindingCategory, Fixability, RuntimeConfidence, ScanResult, Severity};
+use crate::scan::{
+    Finding, FindingCategory, Fixability, RuntimeConfidence, ScanMeta, ScanResult, Severity,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
@@ -30,7 +32,7 @@ impl FindingsUiState {
         let visible_findings = self.visible_findings();
 
         if visible_findings.is_empty() {
-            return render_empty_state();
+            return render_empty_state(&self.result.meta);
         }
 
         match self.view_mode {
@@ -230,13 +232,82 @@ impl FindingView {
     }
 }
 
-fn render_empty_state() -> String {
-    [
-        "No active findings to review right now.",
-        "",
-        "Your latest ClawGuard scan did not surface any risks.",
-    ]
-    .join("\n")
+fn render_empty_state(meta: &ScanMeta) -> String {
+    let mut lines = Vec::new();
+
+    if !meta.runtime_label.is_empty() {
+        let root_display = meta
+            .runtime_root
+            .as_deref()
+            .and_then(|r| r.strip_prefix(&dirs::home_dir_string()))
+            .map(|suffix| format!("~{suffix}"))
+            .or_else(|| meta.runtime_root.clone())
+            .unwrap_or_default();
+
+        lines.push(format!(
+            "ClawGuard scanned {} at {}",
+            meta.runtime_label, root_display
+        ));
+        lines.push(String::new());
+
+        let mut checked_parts = Vec::new();
+        if meta.config_file_count > 0 {
+            checked_parts.push(format!(
+                "{} config {}",
+                meta.config_file_count,
+                plural("file", meta.config_file_count)
+            ));
+        }
+        if meta.skill_dir_count > 0 {
+            checked_parts.push(format!(
+                "{} skill {}",
+                meta.skill_dir_count,
+                plural("dir", meta.skill_dir_count)
+            ));
+        }
+        if meta.mcp_file_count > 0 {
+            checked_parts.push(format!(
+                "{} MCP {}",
+                meta.mcp_file_count,
+                plural("config", meta.mcp_file_count)
+            ));
+        }
+        if meta.env_file_count > 0 {
+            checked_parts.push(format!(
+                "{} env {}",
+                meta.env_file_count,
+                plural("file", meta.env_file_count)
+            ));
+        }
+
+        if !checked_parts.is_empty() {
+            lines.push(format!("  Checked: {}", checked_parts.join(", ")));
+        }
+
+        if !meta.strictness.is_empty() {
+            lines.push(format!("  Strictness: {}", meta.strictness));
+        }
+
+        lines.push(String::new());
+    }
+
+    lines.push("No findings. Your configuration looks clean.".to_string());
+
+    lines.join("\n")
+}
+
+fn plural(word: &str, count: usize) -> String {
+    if count == 1 {
+        word.to_string()
+    } else {
+        format!("{word}s")
+    }
+}
+
+mod dirs {
+    pub fn home_dir_string() -> String {
+        std::env::var("HOME").unwrap_or_default()
+    }
 }
 
 fn title_for_finding(finding: &Finding) -> &'static str {

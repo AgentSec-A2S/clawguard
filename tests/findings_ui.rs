@@ -1,6 +1,6 @@
 use clawguard::scan::{
     Finding, FindingCategory, FindingFix, Fixability, RecommendedAction, RuntimeConfidence,
-    ScanResult, Severity,
+    ScanMeta, ScanResult, Severity,
 };
 use clawguard::ui::findings::FindingsUiState;
 
@@ -115,8 +115,49 @@ fn empty_result_renders_reassuring_state() {
 
     let rendered = state.render();
 
-    assert!(rendered.contains("No active findings to review right now."));
-    assert!(rendered.contains("Your latest ClawGuard scan did not surface any risks."));
+    assert!(rendered.contains("No findings. Your configuration looks clean."));
+}
+
+#[test]
+fn empty_result_with_meta_renders_scan_summary() {
+    let meta = ScanMeta {
+        runtime_label: "OpenClaw".to_string(),
+        runtime_root: Some("/home/user/.openclaw".to_string()),
+        strictness: "Recommended".to_string(),
+        config_file_count: 2,
+        skill_dir_count: 0,
+        mcp_file_count: 1,
+        env_file_count: 0,
+    };
+    let result = ScanResult::from_batches_with_meta(vec![], meta);
+    let state = FindingsUiState::new(result);
+
+    let rendered = state.render();
+
+    assert!(
+        rendered.contains("ClawGuard scanned OpenClaw"),
+        "should include runtime label"
+    );
+    assert!(
+        rendered.contains("2 config files"),
+        "should include config file count"
+    );
+    assert!(
+        rendered.contains("1 MCP config"),
+        "should include MCP count (singular)"
+    );
+    assert!(
+        rendered.contains("Strictness: Recommended"),
+        "should include strictness"
+    );
+    assert!(
+        rendered.contains("No findings. Your configuration looks clean."),
+        "should include clean message"
+    );
+    assert!(
+        !rendered.contains("0 skill"),
+        "should not show zero-count categories"
+    );
 }
 
 #[test]
@@ -383,7 +424,7 @@ fn ignoring_the_last_finding_renders_the_empty_state() {
     state.ignore_selected_once();
     let rendered = state.render();
 
-    assert!(rendered.contains("No active findings to review right now."));
+    assert!(rendered.contains("No findings. Your configuration looks clean."));
 }
 
 #[test]

@@ -35,9 +35,21 @@ pub struct ScanReport {
     pub findings: Vec<Finding>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ScanMeta {
+    pub runtime_label: String,
+    pub runtime_root: Option<String>,
+    pub strictness: String,
+    pub config_file_count: usize,
+    pub skill_dir_count: usize,
+    pub mcp_file_count: usize,
+    pub env_file_count: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanResult {
     findings: Vec<Finding>,
+    pub meta: ScanMeta,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +72,10 @@ impl ScanResult {
     /// Findings are sorted by severity (descending), then `detector_id`, then `path`.
     /// Duplicate findings are preserved; deduplication is detector-owned behavior.
     pub fn from_batches(batches: Vec<Vec<Finding>>) -> Self {
+        Self::from_batches_with_meta(batches, ScanMeta::default())
+    }
+
+    pub fn from_batches_with_meta(batches: Vec<Vec<Finding>>, meta: ScanMeta) -> Self {
         let mut findings: Vec<_> = batches.into_iter().flatten().collect();
         findings.sort_by(|left, right| {
             right
@@ -69,7 +85,7 @@ impl ScanResult {
                 .then_with(|| left.path.cmp(&right.path))
         });
 
-        Self { findings }
+        Self { findings, meta }
     }
 
     pub fn findings(&self) -> &[Finding] {
@@ -134,10 +150,22 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
 
     let mut batches = Vec::new();
     let mut artifacts_by_path = BTreeMap::new();
+    let mut meta = ScanMeta {
+        runtime_label: preset
+            .as_ref()
+            .map_or_else(String::new, |p| p.label.clone()),
+        runtime_root: runtime
+            .root
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        strictness: format!("{:?}", config.strictness),
+        ..ScanMeta::default()
+    };
 
     for target in &runtime.targets {
         match target.domain {
             ScanDomain::Config => {
+                meta.config_file_count += target.paths.len();
                 let output =
                     openclaw::scan_openclaw_state(&target.paths, config.max_file_size_bytes);
                 batches.push(output.findings);
@@ -154,6 +182,7 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                 }
             }
             ScanDomain::Skills => {
+                meta.skill_dir_count += target.paths.len();
                 for path in &target.paths {
                     let output =
                         skills::scan_skill_dir(path, config.max_file_size_bytes, excluded_dirs);
@@ -172,6 +201,7 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                 }
             }
             ScanDomain::Mcp => {
+                meta.mcp_file_count += target.paths.len();
                 let output = mcp::scan_mcp_configs(&target.paths, config.max_file_size_bytes);
                 batches.push(output.findings);
                 for artifact in output.artifacts {
@@ -187,6 +217,7 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                 }
             }
             ScanDomain::Env => {
+                meta.env_file_count += target.paths.len();
                 let output = secrets::scan_secret_files(&target.paths, config.max_file_size_bytes);
                 batches.push(output.findings);
                 for artifact in output.artifacts {
@@ -214,7 +245,7 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
     }
 
     ScanEvidence {
-        result: ScanResult::from_batches(batches),
+        result: ScanResult::from_batches_with_meta(batches, meta),
         artifacts: artifacts_by_path.into_values().collect(),
     }
 }

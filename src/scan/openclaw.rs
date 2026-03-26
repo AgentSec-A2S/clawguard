@@ -133,9 +133,11 @@ fn findings_for_openclaw_config(path: &str, raw: &Value) -> Vec<Finding> {
         }
     }
 
+    findings.extend(findings_for_control_ui(path, root));
     findings.extend(findings_for_channel_policies(path, root, &global_host));
     findings.extend(findings_for_gateway_bind(path, root));
     findings.extend(findings_for_plugin_hooks(path, root));
+    findings.extend(findings_for_plugin_installs(path, root));
     findings.extend(findings_for_webhook_token(path, root));
 
     let Some(agent_list) = root
@@ -262,6 +264,89 @@ fn findings_for_gateway_bind(path: &str, root: &Map<String, Value>) -> Vec<Findi
         "This gateway bind value exposes OpenClaw endpoints beyond loopback, which expands remote attack surface.",
         "Bind the gateway to loopback before exposing OpenClaw endpoints",
     )]
+}
+
+fn findings_for_control_ui(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let dangerously_disabled = root
+        .get("gateway")
+        .and_then(Value::as_object)
+        .and_then(|gw| object_field(gw, "controlUi"))
+        .and_then(|ui| bool_field(ui, "dangerouslyDisableDeviceAuth"))
+        .unwrap_or(false);
+
+    if !dangerously_disabled {
+        return Vec::new();
+    }
+
+    vec![build_config_finding(
+        path,
+        "dangerous-disable-device-auth",
+        "gateway.controlUi",
+        Severity::Critical,
+        Some("gateway.controlUi.dangerouslyDisableDeviceAuth=true".to_string()),
+        "Device authentication is disabled on the control UI. Anyone on the local network can control the gateway without device-level auth.",
+        "Remove dangerouslyDisableDeviceAuth or set it to false",
+    )]
+}
+
+fn findings_for_plugin_installs(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let Some(installs) =
+        object_field(root, "plugins").and_then(|plugins| object_field(plugins, "installs"))
+    else {
+        return Vec::new();
+    };
+
+    let mut entry_ids: Vec<_> = installs.keys().cloned().collect();
+    entry_ids.sort();
+
+    let mut findings = Vec::new();
+
+    for entry_id in entry_ids {
+        let Some(entry) = installs.get(&entry_id).and_then(Value::as_object) else {
+            continue;
+        };
+
+        let source = string_field(entry, "source").map(normalize_lower);
+        let source_path = string_field(entry, "sourcePath");
+
+        if let Some(ref sp) = source_path {
+            if is_temp_path(sp) {
+                findings.push(build_config_finding(
+                    path,
+                    "insecure-plugin-install-path",
+                    &format!("plugins.installs.{entry_id}"),
+                    Severity::Medium,
+                    Some(format!("plugins.installs.{entry_id}.sourcePath={sp}")),
+                    "This plugin was installed from a temporary directory. The source is non-reproducible and could have been tampered with before installation.",
+                    "Reinstall this plugin from a stable path or registry",
+                ));
+            }
+        }
+
+        if source.as_deref() == Some("path") {
+            findings.push(build_config_finding(
+                path,
+                "plugin-source-path-install",
+                &format!("plugins.installs.{entry_id}"),
+                Severity::Info,
+                Some(format!("plugins.installs.{entry_id}.source=path")),
+                "This plugin was installed from a local filesystem path, bypassing registry integrity checks.",
+                "Consider installing from a registry for supply-chain assurance",
+            ));
+        }
+    }
+
+    findings
+}
+
+fn is_temp_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.starts_with("/tmp/")
+        || normalized.starts_with("/tmp.")
+        || normalized.contains("/tmp.")
+        || normalized.starts_with("/var/tmp/")
+        || normalized.starts_with("/private/var/folders/")
+        || normalized.starts_with("/private/tmp/")
 }
 
 fn findings_for_plugin_hooks(path: &str, root: &Map<String, Value>) -> Vec<Finding> {

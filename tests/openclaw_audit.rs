@@ -1515,3 +1515,221 @@ fn set_mode(path: &Path, mode: u32) {
         let _ = (path, mode);
     }
 }
+
+// ---- dangerous-disable-device-auth detector ----
+
+#[test]
+fn dangerously_disable_device_auth_is_flagged_as_critical() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "gateway": {
+                "controlUi": {
+                    "dangerouslyDisableDeviceAuth": true
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "gateway.controlUi.dangerouslyDisableDeviceAuth=true",
+    );
+
+    assert_eq!(finding.severity, Severity::Critical);
+    assert_eq!(finding.detector_id, "openclaw-config");
+    assert_eq!(finding.category, FindingCategory::Config);
+}
+
+#[test]
+fn dangerously_disable_device_auth_false_is_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "gateway": {
+                "controlUi": {
+                    "dangerouslyDisableDeviceAuth": false
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+
+    assert!(
+        !output.findings.iter().any(|f| f.evidence.as_deref()
+            == Some("gateway.controlUi.dangerouslyDisableDeviceAuth=true")),
+        "should not flag when dangerouslyDisableDeviceAuth is false"
+    );
+}
+
+#[test]
+fn missing_control_ui_is_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "gateway": {
+                "mode": "local"
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("dangerouslyDisableDeviceAuth")),
+        "should not flag when controlUi section is absent"
+    );
+}
+
+// ---- plugin install path detectors ----
+
+#[test]
+fn plugin_installed_from_tmp_path_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "installs": {
+                    "test-plugin": {
+                        "source": "path",
+                        "sourcePath": "/tmp/tmp.SJKf4mqKI8/test-plugin-installable",
+                        "installPath": "/home/node/.openclaw/extensions/test-plugin",
+                        "version": "1.0.0"
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "plugins.installs.test-plugin.sourcePath=/tmp/tmp.SJKf4mqKI8/test-plugin-installable",
+    );
+
+    assert_eq!(finding.severity, Severity::Medium);
+    assert_eq!(finding.detector_id, "openclaw-config");
+}
+
+#[test]
+fn plugin_installed_from_var_tmp_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "installs": {
+                    "some-plugin": {
+                        "source": "path",
+                        "sourcePath": "/var/tmp/build-output/some-plugin",
+                        "installPath": "/home/.openclaw/extensions/some-plugin",
+                        "version": "2.0.0"
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+
+    assert!(
+        output
+            .findings
+            .iter()
+            .any(|f| f.evidence.as_deref().unwrap_or("").contains("/var/tmp/")),
+        "should flag plugins installed from /var/tmp/"
+    );
+}
+
+#[test]
+fn plugin_source_path_install_is_flagged_as_info() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "installs": {
+                    "my-plugin": {
+                        "source": "path",
+                        "sourcePath": "/home/user/stable/my-plugin",
+                        "installPath": "/home/node/.openclaw/extensions/my-plugin",
+                        "version": "1.0.0"
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(&output.findings, "plugins.installs.my-plugin.source=path");
+
+    assert_eq!(finding.severity, Severity::Info);
+}
+
+#[test]
+fn plugin_installed_from_stable_path_is_not_flagged_as_insecure() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "installs": {
+                    "safe-plugin": {
+                        "source": "path",
+                        "sourcePath": "/home/user/projects/safe-plugin",
+                        "installPath": "/home/node/.openclaw/extensions/safe-plugin",
+                        "version": "1.0.0"
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("insecure-plugin")),
+        "should not flag insecure-plugin-install-path for stable paths"
+    );
+}
+
+#[test]
+fn plugin_from_registry_is_not_flagged_as_path_install() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "installs": {
+                    "registry-plugin": {
+                        "source": "registry",
+                        "installPath": "/home/node/.openclaw/extensions/registry-plugin",
+                        "version": "3.0.0"
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("source=path")),
+        "should not flag source=path for registry installs"
+    );
+}
+
+#[test]
+fn no_plugins_section_produces_no_install_findings() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "gateway": {
+                "mode": "local"
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("plugins.installs")),
+        "should produce no plugin install findings when plugins section is absent"
+    );
+}
