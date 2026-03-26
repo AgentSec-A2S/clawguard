@@ -55,6 +55,8 @@ pub struct AppConfig {
     pub webhook_url: Option<String>,
     pub max_file_size_bytes: u64,
     #[serde(default)]
+    pub telegram_chat_id: Option<String>,
+    #[serde(default)]
     pub sse: SseConfig,
 }
 

@@ -2,6 +2,7 @@ use std::fmt::{Display, Formatter};
 
 use crate::config::presets::preset_by_id;
 use crate::config::schema::{AlertStrategy, AppConfig, Strictness};
+use crate::config::store::validate_webhook_url;
 use crate::discovery::DiscoveryReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +71,7 @@ pub fn build_app_config(
         alert_strategy: answers.alert_strategy,
         webhook_url,
         max_file_size_bytes: preset.max_file_size_bytes,
+        telegram_chat_id: None,
         sse: Default::default(),
     })
 }
@@ -82,17 +84,13 @@ fn validated_webhook_url(
         return Ok(None);
     }
 
-    let Some(url) = webhook_url.map(str::trim).filter(|url| !url.is_empty()) else {
+    let Some(raw) = webhook_url.map(str::trim).filter(|url| !url.is_empty()) else {
         return Err(WizardError::InvalidWebhookConfig(
             "webhook alert strategy requires a configured webhook URL".to_string(),
         ));
     };
 
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(WizardError::InvalidWebhookConfig(
-            "webhook_url must start with http:// or https://".to_string(),
-        ));
-    }
-
-    Ok(Some(url.to_string()))
+    validate_webhook_url(raw)
+        .map(Some)
+        .map_err(WizardError::InvalidWebhookConfig)
 }

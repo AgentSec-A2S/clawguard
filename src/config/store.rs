@@ -62,6 +62,28 @@ pub fn load_config_from_path(path: &Path) -> Result<Option<AppConfig>, ConfigSto
         .map_err(|error| ConfigStoreError::Deserialize(error.to_string()))
 }
 
+pub fn validate_webhook_url(url: &str) -> Result<String, String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("webhook URL cannot be empty".to_string());
+    }
+    if url.len() > 2048 {
+        return Err("webhook URL is too long (max 2048 characters)".to_string());
+    }
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("webhook URL must start with http:// or https://".to_string());
+    }
+    let after_scheme = if url.starts_with("https://") {
+        &url[8..]
+    } else {
+        &url[7..]
+    };
+    if after_scheme.is_empty() || after_scheme.starts_with('/') || after_scheme.starts_with(':') {
+        return Err("webhook URL must include a host".to_string());
+    }
+    Ok(url.to_string())
+}
+
 pub fn save_config_for_home(
     config: &AppConfig,
     home_dir: &Path,

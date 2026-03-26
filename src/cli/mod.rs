@@ -8,7 +8,10 @@ use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
 
 use crate::config::schema::{AlertStrategy, AppConfig, Strictness};
-use crate::config::store::{clawguard_dir_for_home, load_config, resolve_home_dir};
+use crate::config::store::{
+    clawguard_dir_for_home, load_config, resolve_home_dir, save_config_for_home,
+    validate_webhook_url,
+};
 use crate::daemon::recovery::restore_policy_file;
 use crate::daemon::watch::{
     build_watch_plan, NotifyWatchBackend, PollingWatchBackend, WatchBackend, WatchCycleOutcome,
@@ -76,6 +79,11 @@ enum Commands {
     },
     /// Restore one approved trust target from the saved baseline payload.
     Trust(TrustArgs),
+    /// View or change notification settings.
+    Notify {
+        #[command(subcommand)]
+        command: Option<NotifyCommands>,
+    },
     /// Start the foreground watcher loop for the configured runtime.
     Watch(WatchArgs),
 }
@@ -111,6 +119,45 @@ struct WatchArgs {
     /// Start an SSE server on this port for real-time alert streaming. 0 = disabled.
     #[arg(long, default_value_t = 0)]
     sse_port: u16,
+}
+
+#[derive(Debug, Subcommand)]
+enum NotifyCommands {
+    /// Switch to desktop notifications.
+    Desktop,
+    /// Switch to webhook notifications.
+    Webhook {
+        /// The webhook URL (must start with http:// or https://).
+        url: String,
+    },
+    /// Enable SSE server and configure Telegram alerts via OpenClaw plugin.
+    Telegram {
+        /// Telegram chat ID. If omitted, uses previously saved value or a placeholder.
+        chat_id: Option<String>,
+    },
+    /// Disable all notifications (log-only) and stop SSE server.
+    Off,
+}
+
+#[derive(Debug, Serialize)]
+struct NotifyShowOutput {
+    mode: &'static str,
+    alert_strategy: String,
+    webhook_url: Option<String>,
+    telegram_chat_id: Option<String>,
+    sse_port: u16,
+    sse_bind: String,
+}
+
+#[derive(Debug, Serialize)]
+struct NotifyUpdateOutput {
+    mode: &'static str,
+    alert_strategy: String,
+    webhook_url: Option<String>,
+    telegram_chat_id: Option<String>,
+    sse_port: u16,
+    sse_bind: String,
+    changed: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -236,6 +283,10 @@ pub fn run() -> ExitCode {
             command: Some(AlertsCommands::Ignore { ref alert_id }),
         }) => run_alert_ignore_command(&cli, alert_id),
         Some(Commands::Trust(ref args)) => run_trust_command(&cli, args),
+        Some(Commands::Notify { command: None }) => run_notify_show_command(&cli),
+        Some(Commands::Notify {
+            command: Some(ref cmd),
+        }) => run_notify_update_command(&cli, cmd),
         Some(Commands::Watch(ref args)) => run_watch_command(&cli, args),
         None => run_root_command(&cli),
     }
@@ -545,6 +596,203 @@ fn run_trust_command(cli: &Cli, args: &TrustArgs) -> ExitCode {
     };
 
     render_trust_output(cli.json, &output)
+}
+
+fn run_notify_show_command(cli: &Cli) -> ExitCode {
+    let config = match load_saved_config_for_operational_command("notify") {
+        Ok(config) => config,
+        Err(code) => return code,
+    };
+
+    let telegram_active = config.sse.port > 0 && config.telegram_chat_id.is_some();
+
+    let output = NotifyShowOutput {
+        mode: "notify",
+        alert_strategy: format!("{:?}", config.alert_strategy),
+        webhook_url: config.webhook_url.clone(),
+        telegram_chat_id: config.telegram_chat_id.clone(),
+        sse_port: config.sse.port,
+        sse_bind: config.sse.bind.clone(),
+    };
+
+    if cli.json {
+        match serde_json::to_string_pretty(&output) {
+            Ok(serialized) => println!("{serialized}"),
+            Err(error) => {
+                eprintln!("failed to serialize notify output: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        println!("Notification Configuration");
+        println!("  Strategy:    {}", format!("{:?}", config.alert_strategy));
+        if let Some(ref url) = config.webhook_url {
+            println!("  Webhook:     {url}");
+        } else {
+            println!("  Webhook:     (not configured)");
+        }
+        if telegram_active {
+            println!(
+                "  Telegram:    active (chat {})",
+                config.telegram_chat_id.as_deref().unwrap_or("?")
+            );
+        } else {
+            println!("  Telegram:    inactive");
+        }
+        if config.sse.port > 0 {
+            println!(
+                "  SSE:         port {} on {}",
+                config.sse.port, config.sse.bind
+            );
+        } else {
+            println!("  SSE:         disabled");
+        }
+        println!();
+        println!("Commands:");
+        println!("  clawguard notify desktop              switch to desktop notifications");
+        println!("  clawguard notify webhook <url>        switch to webhook");
+        println!("  clawguard notify telegram [chat-id]   enable Telegram via SSE");
+        println!("  clawguard notify off                  disable all notifications");
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn run_notify_update_command(cli: &Cli, cmd: &NotifyCommands) -> ExitCode {
+    let home_dir = resolve_home_dir();
+    let mut config = match load_saved_config_for_operational_command("notify") {
+        Ok(config) => config,
+        Err(code) => return code,
+    };
+
+    let mut changed = Vec::new();
+
+    match cmd {
+        NotifyCommands::Desktop => {
+            config.alert_strategy = AlertStrategy::Desktop;
+            config.webhook_url = None;
+            changed.push("alert_strategy -> Desktop".to_string());
+        }
+        NotifyCommands::Webhook { url } => {
+            let validated = match validate_webhook_url(url) {
+                Ok(url) => url,
+                Err(error) => {
+                    eprintln!("invalid webhook URL: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            config.alert_strategy = AlertStrategy::Webhook;
+            config.webhook_url = Some(validated);
+            changed.push("alert_strategy -> Webhook".to_string());
+            changed.push(format!("webhook_url -> {url}"));
+        }
+        NotifyCommands::Telegram { chat_id } => {
+            if let Some(ref id) = chat_id {
+                let trimmed = id.trim();
+                if trimmed.is_empty() {
+                    eprintln!("telegram chat ID cannot be empty");
+                    return ExitCode::FAILURE;
+                }
+                if trimmed.len() > 64 {
+                    eprintln!("telegram chat ID is too long (max 64 characters)");
+                    return ExitCode::FAILURE;
+                }
+                if !trimmed
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    eprintln!(
+                        "telegram chat ID must contain only alphanumeric characters, hyphens, or underscores"
+                    );
+                    return ExitCode::FAILURE;
+                }
+                config.telegram_chat_id = Some(trimmed.to_string());
+                changed.push(format!("telegram_chat_id -> {trimmed}"));
+            } else if config.telegram_chat_id.is_none() {
+                eprintln!(
+                    "no stored telegram chat ID; provide one: clawguard notify telegram <chat-id>"
+                );
+                return ExitCode::FAILURE;
+            }
+            config.alert_strategy = AlertStrategy::LogOnly;
+            config.webhook_url = None;
+            if config.sse.port == 0 {
+                config.sse.port = 37776;
+                changed.push("sse.port -> 37776".to_string());
+            }
+            changed.push("alert_strategy -> LogOnly (Telegram via SSE)".to_string());
+        }
+        NotifyCommands::Off => {
+            config.alert_strategy = AlertStrategy::LogOnly;
+            config.webhook_url = None;
+            config.sse.port = 0;
+            changed.push("alert_strategy -> LogOnly".to_string());
+            changed.push("sse.port -> 0".to_string());
+        }
+    }
+
+    if let Err(error) = save_config_for_home(&config, &home_dir) {
+        eprintln!("failed to save config: {error}");
+        return ExitCode::FAILURE;
+    }
+
+    let output = NotifyUpdateOutput {
+        mode: "notify_update",
+        alert_strategy: format!("{:?}", config.alert_strategy),
+        webhook_url: config.webhook_url.clone(),
+        telegram_chat_id: config.telegram_chat_id.clone(),
+        sse_port: config.sse.port,
+        sse_bind: config.sse.bind.clone(),
+        changed: changed.clone(),
+    };
+
+    if cli.json {
+        match serde_json::to_string_pretty(&output) {
+            Ok(serialized) => println!("{serialized}"),
+            Err(error) => {
+                eprintln!("failed to serialize notify update output: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        for change in &changed {
+            println!("  {change}");
+        }
+        println!();
+
+        if matches!(cmd, NotifyCommands::Telegram { .. }) {
+            let chat_id_display = config
+                .telegram_chat_id
+                .as_deref()
+                .unwrap_or("<your-chat-id>");
+            let snippet = serde_json::json!({
+                "plugins": {
+                    "entries": {
+                        "clawguard": {
+                            "enabled": true,
+                            "config": {
+                                "port": config.sse.port,
+                                "channel": "telegram",
+                                "to": chat_id_display
+                            }
+                        }
+                    }
+                }
+            });
+            println!("Add this to your openclaw.json to receive alerts in Telegram:");
+            println!();
+            if let Ok(pretty) = serde_json::to_string_pretty(&snippet) {
+                for line in pretty.lines() {
+                    println!("  {line}");
+                }
+            }
+            println!();
+        }
+
+        println!("Run `clawguard watch` to start monitoring.");
+    }
+
+    ExitCode::SUCCESS
 }
 
 fn run_baseline_approve_command(cli: &Cli) -> ExitCode {
