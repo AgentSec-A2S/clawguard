@@ -1,6 +1,6 @@
 # ClawGuard
 
-> [为什么需要](#为什么需要-clawguard) | [当前能力](#当前能力) | [检查项](#现在会检查什么) | [工作方式](#工作方式) | [安装](#安装) | [使用](#首次运行与常用命令) | [通知配置](#通知配置) | [SSE 与消息集成](#sse-服务器与消息集成) | [输出模型](#输出模型) | [范围与限制](#当前范围与限制) | [开发](#开发)
+> [为什么需要](#为什么需要-clawguard) | [当前能力](#当前能力) | [检查项](#现在会检查什么) | [工作方式](#工作方式) | [安装](#安装) | [使用](#首次运行与常用命令) | [通知](#通知) | [输出模型](#输出模型) | [范围与限制](#当前范围与限制) | [开发](#开发)
 
 ClawGuard 是一个面向 OpenClaw 的宿主机侧完整性守护工具。
 
@@ -214,28 +214,41 @@ clawguard status --json
 clawguard scan --no-interactive --json
 ```
 
-## 通知配置
+## 通知
 
-首次运行向导会将选择的通知路由保存到 `~/.clawguard/config.toml`。如需后续修改，直接编辑该文件：
+ClawGuard 有两条独立的通知路径，可以同时运行。两者都在 `clawguard watch` 期间触发——手动 `scan` 不发送通知。
+
+```
+watch loop 每轮迭代
+  ├── 内置通知（config.toml 的 alert_strategy）
+  │   ├── Desktop → macOS osascript / Linux notify-send
+  │   ├── Webhook → HTTP POST 到配置的 URL
+  │   └── LogOnly → 仅终端输出
+  │
+  └── SSE 流（可选，config.toml 的 [sse] 段）
+      └── 实时事件 → OpenClaw 插件 → Telegram / Discord / Slack
+```
+
+### 内置通知
+
+首次运行向导将通知路由保存到 `~/.clawguard/config.toml`。直接编辑即可后续修改：
 
 ```toml
 alert_strategy = "Desktop"
 webhook_url = "https://hooks.example.com/clawguard"
 ```
 
-- `alert_strategy = "Desktop"` — 本地会话支持时使用桌面通知，不支持时回退到日志输出
-- `alert_strategy = "Webhook"` — 需要设置 `webhook_url`，URL 必须以 `http://` 或 `https://` 开头
-- `alert_strategy = "LogOnly"` — 所有通知仅输出到前台 `watch` 日志
+- `Desktop` — 本地会话支持时使用桌面通知，不支持时回退到日志输出
+- `Webhook` — 需要 `webhook_url`，以 `http://` 或 `https://` 开头
+- `LogOnly` — 所有通知仅输出到前台 `watch` 终端
 
-每日摘要在 `clawguard watch` 首次评估摘要投递时开始计时。ClawGuard 在该次评估时初始化摘要游标，不会回溯旧告警，因此首次投递的摘要只包含游标建立之后创建的告警。
+每日摘要在首次 `watch` 评估时开始计时。ClawGuard 在该次初始化游标，不回溯旧告警。
 
-## SSE 服务器与消息集成
+### SSE 服务器（实时流式推送）
 
-ClawGuard 可以通过内嵌的 SSE（Server-Sent Events）服务器将告警实时推送给外部消费者。
+内嵌 SSE 服务器在独立线程上将告警和摘要事件推送给外部消费者。
 
-### 启用 SSE 服务器
-
-在 `~/.clawguard/config.toml` 中添加：
+在 `~/.clawguard/config.toml` 中启用：
 
 ```toml
 [sse]
@@ -243,11 +256,9 @@ port = 37776
 bind = "127.0.0.1"
 ```
 
-或使用 CLI 参数：`clawguard watch --sse-port 37776`
+或通过 CLI：`clawguard watch --sse-port 37776`
 
-服务器在独立线程上运行，不会阻塞 watch 循环。运行时修改 config 文件中的 `port` 或 `bind` 会自动重启服务器。
-
-### SSE 端点
+Config 热更新：运行时修改 `port` 或 `bind` 会自动重启服务器。
 
 | 端点 | 说明 |
 |------|------|
@@ -256,20 +267,16 @@ bind = "127.0.0.1"
 | `GET /status` | 当前状态：客户端数量、模式 |
 | `GET /alerts?limit=10` | 近期告警 JSON 列表 |
 
-### 用 curl 测试
+用 curl 测试：
 
 ```bash
-# 启动带 SSE 的 watch
-clawguard watch --sse-port 37776
-
-# 在另一个终端
-curl -N http://127.0.0.1:37776/stream
-curl http://127.0.0.1:37776/health
+clawguard watch --sse-port 37776        # 终端 1
+curl -N http://127.0.0.1:37776/stream   # 终端 2
 ```
 
-### OpenClaw gateway 插件
+### 通过 OpenClaw gateway 插件推送消息
 
-`openclaw-plugin/` 目录包含一个 OpenClaw gateway 插件，它消费 SSE 流并通过 OpenClaw 的 channel 基础设施将告警转发到 Telegram/Discord/Slack 等消息平台。
+`openclaw-plugin/` 目录包含一个插件，消费 SSE 流并通过 OpenClaw channel 转发到 Telegram/Discord/Slack 等平台。
 
 在 `openclaw.json` 中配置：
 

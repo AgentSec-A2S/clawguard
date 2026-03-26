@@ -1,6 +1,6 @@
 # ClawGuard
 
-> [Why ClawGuard Exists](#why-clawguard-exists) | [Current Features](#current-features) | [What It Checks](#what-it-checks-today) | [How It Works](#how-it-works) | [Install](#install) | [Usage](#first-run-and-usage) | [Notifications](#notification-configuration) | [SSE & Messaging](#sse-server--messaging-integration) | [Output Model](#output-model) | [Scope & Limits](#current-v0-scope-and-limits) | [Development](#development)
+> [Why ClawGuard Exists](#why-clawguard-exists) | [Current Features](#current-features) | [What It Checks](#what-it-checks-today) | [How It Works](#how-it-works) | [Install](#install) | [Usage](#first-run-and-usage) | [Notifications](#notifications) | [Output Model](#output-model) | [Scope & Limits](#current-v0-scope-and-limits) | [Development](#development)
 
 ClawGuard is a host-side integrity guardian for OpenClaw.
 
@@ -204,30 +204,42 @@ clawguard status --json
 clawguard scan --no-interactive --json
 ```
 
-## Notification Configuration
+## Notifications
+
+ClawGuard has two independent notification paths that can run simultaneously. Both are triggered during `clawguard watch` — manual `scan` does not send notifications.
+
+```
+watch loop iteration
+  ├── Built-in notifications (alert_strategy in config.toml)
+  │   ├── Desktop → macOS osascript / Linux notify-send
+  │   ├── Webhook → HTTP POST to configured URL
+  │   └── LogOnly → terminal output only
+  │
+  └── SSE stream (optional, [sse] in config.toml)
+      └── Real-time events → OpenClaw plugin → Telegram / Discord / Slack
+```
+
+### Built-in notifications
 
 The first-run wizard saves the selected notification route into `~/.clawguard/config.toml`.
-If you want to change it later without rerunning the wizard, edit that file directly:
+Edit it directly to change later:
 
 ```toml
 alert_strategy = "Desktop"
 webhook_url = "https://hooks.example.com/clawguard"
 ```
 
-- `alert_strategy = "Desktop"` uses desktop notifications when the local session supports them and falls back to log-only output when it does not
-- `alert_strategy = "Webhook"` requires `webhook_url` and the URL must start with `http://` or `https://`
-- `alert_strategy = "LogOnly"` keeps all notification delivery inside the foreground `watch` output
+- `Desktop` — desktop notifications when the local session supports them, falls back to log-only
+- `Webhook` — requires `webhook_url` starting with `http://` or `https://`
+- `LogOnly` — all notification output stays in the foreground `watch` terminal
 
-Daily digest cadence starts when `clawguard watch` first evaluates digest delivery for the saved route.
-ClawGuard seeds the digest cursor on that first evaluation instead of backfilling older alerts, so the first delivered digest only includes alerts created after digest cadence starts.
+Daily digest cadence starts on the first `watch` evaluation. ClawGuard seeds the cursor then — the first digest only includes alerts created after that point.
 
-## SSE Server & Messaging Integration
+### SSE server (real-time streaming)
 
-ClawGuard can stream alerts in real-time to external consumers via an embedded SSE (Server-Sent Events) server.
+An embedded SSE server streams alert and digest events to external consumers on a dedicated thread.
 
-### Enable the SSE server
-
-Add to `~/.clawguard/config.toml`:
+Enable in `~/.clawguard/config.toml`:
 
 ```toml
 [sse]
@@ -235,11 +247,9 @@ port = 37776
 bind = "127.0.0.1"
 ```
 
-Or use the CLI flag: `clawguard watch --sse-port 37776`
+Or via CLI: `clawguard watch --sse-port 37776`
 
-The server runs on a dedicated thread and never blocks the watch loop. Changing `port` or `bind` in the config file while watching triggers an automatic server restart.
-
-### SSE endpoints
+Config hot-reload: changing `port` or `bind` while watching automatically restarts the server.
 
 | Endpoint | Description |
 |----------|-------------|
@@ -248,20 +258,16 @@ The server runs on a dedicated thread and never blocks the watch loop. Changing 
 | `GET /status` | Current state: client count, mode |
 | `GET /alerts?limit=10` | Recent alerts as JSON |
 
-### Test with curl
+Test with curl:
 
 ```bash
-# Start watch with SSE
-clawguard watch --sse-port 37776
-
-# In another terminal
-curl -N http://127.0.0.1:37776/stream
-curl http://127.0.0.1:37776/health
+clawguard watch --sse-port 37776    # terminal 1
+curl -N http://127.0.0.1:37776/stream  # terminal 2
 ```
 
-### OpenClaw gateway plugin
+### Messaging via OpenClaw gateway plugin
 
-The `openclaw-plugin/` directory contains a ready-to-use OpenClaw gateway plugin that consumes the SSE stream and forwards alerts to messaging channels (Telegram, Discord, Slack, etc.) through OpenClaw's channel infrastructure.
+The `openclaw-plugin/` directory contains a plugin that consumes the SSE stream and forwards alerts to Telegram, Discord, Slack, or any other OpenClaw channel.
 
 Add to your `openclaw.json`:
 
@@ -282,7 +288,7 @@ Add to your `openclaw.json`:
 }
 ```
 
-Available slash commands in your messaging channel:
+Slash commands available in your messaging channel:
 
 | Command | Description | Status |
 |---------|-------------|--------|
