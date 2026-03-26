@@ -230,7 +230,6 @@ fn handle_sse_upgrade(stream: TcpStream, sse_clients: &mut Vec<TcpStream>) {
         "Content-Type: text/event-stream\r\n",
         "Cache-Control: no-cache\r\n",
         "Connection: keep-alive\r\n",
-        "Access-Control-Allow-Origin: *\r\n",
         "\r\n",
     );
 

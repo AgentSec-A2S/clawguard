@@ -343,7 +343,6 @@ fn is_temp_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
     normalized.starts_with("/tmp/")
         || normalized.starts_with("/tmp.")
-        || normalized.contains("/tmp.")
         || normalized.starts_with("/var/tmp/")
         || normalized.starts_with("/private/var/folders/")
         || normalized.starts_with("/private/tmp/")
