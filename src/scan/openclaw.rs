@@ -518,6 +518,30 @@ fn extract_basename(resolved_path: Option<&str>, pattern: Option<&str>) -> Optio
     None
 }
 
+/// Shell sink names recognized by the pipe-to-shell detector.
+const SHELL_SINKS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
+
+/// Extract the basename of a token that may be a full path (e.g. `/usr/bin/env` -> `env`).
+/// If the basename is `env` and a `next_token` is provided, unwrap and return that
+/// token's basename instead so that `/usr/bin/env bash` resolves to `bash`.
+fn command_basename(token: &str, next_token: Option<&str>) -> String {
+    let base = std::path::Path::new(token)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(token);
+    let base_lower = normalize_lower(base);
+    if base_lower == "env" {
+        if let Some(next) = next_token {
+            let next_base = std::path::Path::new(next)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(next);
+            return normalize_lower(next_base);
+        }
+    }
+    base_lower
+}
+
 /// Check if a command string contains catastrophic patterns.
 /// Returns `Some(description)` if a catastrophic pattern is found.
 fn catastrophic_command_evidence(command: &str) -> Option<String> {
@@ -526,24 +550,21 @@ fn catastrophic_command_evidence(command: &str) -> Option<String> {
         return Some("reverse shell via /dev/tcp".to_string());
     }
 
-    // Split on pipe, &&, and ; to get command segments.
+    // Split on pipe, &&, and ; to get command segments with delimiter info.
     let segments = split_command_segments(command);
 
-    for (index, segment) in segments.iter().enumerate() {
+    for (segment, is_pipe_target) in &segments {
         let tokens = tokenize_segment(segment);
         if tokens.is_empty() {
             continue;
         }
 
-        // Check if this segment (after a pipe) receives into sh/bash.
-        if index > 0 {
-            let lead = normalize_lower(&tokens[0]);
-            if lead == "sh" || lead == "bash" {
-                return Some("pipe to shell".to_string());
-            }
-        }
+        let lead = command_basename(&tokens[0], tokens.get(1).map(|s| s.as_str()));
 
-        let lead = normalize_lower(&tokens[0]);
+        // Check if this segment receives piped input into a shell.
+        if *is_pipe_target && SHELL_SINKS.iter().any(|&s| s == lead) {
+            return Some("pipe to shell".to_string());
+        }
 
         // rm -rf / or rm -rf ~ or rm -rf /*
         if lead == "rm" && is_rm_rf_catastrophic(&tokens) {
@@ -574,24 +595,55 @@ fn catastrophic_command_evidence(command: &str) -> Option<String> {
     None
 }
 
-/// Split a command string on |, &&, and ; to get individual segments.
-fn split_command_segments(command: &str) -> Vec<String> {
+/// Split a command string on `|`, `&&`, and `;` to get individual segments.
+/// Returns `Vec<(segment, is_pipe_target)>` where `is_pipe_target` is true only
+/// when the preceding delimiter was a pipe (`|`).
+/// Quote-aware: delimiters inside single or double quotes are not treated as splits.
+fn split_command_segments(command: &str) -> Vec<(String, bool)> {
     let mut segments = Vec::new();
     let mut current = String::new();
+    let mut next_is_pipe = false;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
     let chars: Vec<char> = command.chars().collect();
     let len = chars.len();
     let mut i = 0;
 
     while i < len {
         let ch = chars[i];
+
+        // Track quote state.
+        if !in_double_quote && ch == '\'' {
+            in_single_quote = !in_single_quote;
+            current.push(ch);
+            i += 1;
+            continue;
+        }
+        if !in_single_quote && ch == '"' {
+            in_double_quote = !in_double_quote;
+            current.push(ch);
+            i += 1;
+            continue;
+        }
+
+        // Inside quotes, never split.
+        if in_single_quote || in_double_quote {
+            current.push(ch);
+            i += 1;
+            continue;
+        }
+
         if ch == '|' && (i + 1 >= len || chars[i + 1] != '|') {
-            segments.push(std::mem::take(&mut current));
+            segments.push((std::mem::take(&mut current), next_is_pipe));
+            next_is_pipe = true;
             i += 1;
         } else if ch == '&' && i + 1 < len && chars[i + 1] == '&' {
-            segments.push(std::mem::take(&mut current));
+            segments.push((std::mem::take(&mut current), next_is_pipe));
+            next_is_pipe = false;
             i += 2;
         } else if ch == ';' {
-            segments.push(std::mem::take(&mut current));
+            segments.push((std::mem::take(&mut current), next_is_pipe));
+            next_is_pipe = false;
             i += 1;
         } else {
             current.push(ch);
@@ -600,7 +652,7 @@ fn split_command_segments(command: &str) -> Vec<String> {
     }
 
     if !current.is_empty() {
-        segments.push(current);
+        segments.push((current, next_is_pipe));
     }
 
     segments
@@ -673,27 +725,23 @@ fn is_rm_rf_catastrophic(tokens: &[String]) -> bool {
 }
 
 /// Check if a chmod command is catastrophically dangerous.
+/// Requires both `777` mode and a critical path target (`/` or `/*`).
+/// The recursive flag alone without a critical path is not catastrophic
+/// (e.g. `chmod -R 777 ./cache` is broad but not system-destroying).
 fn is_chmod_catastrophic(tokens: &[String]) -> bool {
     let has_777 = tokens.iter().any(|t| t == "777");
     if !has_777 {
         return false;
     }
 
-    let has_recursive = tokens.iter().any(|t| {
-        let lower = normalize_lower(t);
-        lower == "-r" || lower == "--recursive"
-    });
-
-    // chmod 777 / or chmod -R 777
-    let has_critical_path = tokens.iter().skip(1).any(|t| {
+    // chmod 777 / or chmod -R 777 /
+    tokens.iter().skip(1).any(|t| {
         if t.starts_with('-') || t == "777" {
             return false;
         }
         let trimmed = t.trim();
         trimmed == "/" || trimmed == "/*"
-    });
-
-    has_recursive || has_critical_path
+    })
 }
 
 /// Check if a dd command is catastrophically dangerous (targeting a block device).
