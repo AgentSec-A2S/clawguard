@@ -230,10 +230,34 @@ ClawGuard 是 findings-first 的。
 
 ## 开发
 
-在 `clawguard/` 目录下执行：
+在项目根目录下执行：
 
 ```bash
-source ~/.cargo/env
 cargo test
 cargo build --release
 ```
+
+### 发版流程
+
+ClawGuard 在私有 monorepo 中开发，通过 `git subtree` 发布到本公开仓库。发版自动化：
+
+1. 推送变更到本仓库的 `main` 分支
+2. 创建版本标签：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+3. GitHub Actions 自动构建 macOS（Intel + Apple Silicon）和 Linux（x86_64 + ARM64）预编译二进制，创建 GitHub Release 并附带 tarball 和 SHA256 校验文件。
+
+### Monorepo 开发者
+
+如果你在私有 `claw` monorepo 中开发 ClawGuard：
+
+```bash
+# 将 clawguard/ 子目录同步到公开仓库
+git subtree push --prefix=clawguard git@github.com:AgentSec-A2S/clawguard.git main
+```
+
+请勿将整个 monorepo 推送到公开远端。

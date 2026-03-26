@@ -246,10 +246,34 @@ The terminal UI and `--json` output are both generated from the same underlying 
 
 ## Development
 
-Run from `clawguard/`:
+Run from the project root:
 
 ```bash
-source ~/.cargo/env
 cargo test
 cargo build --release
 ```
+
+### Release workflow
+
+ClawGuard is developed in a private monorepo and published here via `git subtree`. Releases are automated:
+
+1. Push changes to this repo's `main` branch
+2. Create a version tag:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+3. GitHub Actions builds pre-compiled binaries for macOS (Intel + Apple Silicon) and Linux (x86_64 + ARM64), then creates a GitHub Release with tarballs and SHA256 checksums.
+
+### For monorepo developers
+
+If you develop ClawGuard inside the private `claw` monorepo:
+
+```bash
+# Sync clawguard/ subdirectory to the public repo
+git subtree push --prefix=clawguard git@github.com:AgentSec-A2S/clawguard.git main
+```
+
+Never push the entire monorepo to the public remote.
