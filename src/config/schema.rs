@@ -54,4 +54,27 @@ pub struct AppConfig {
     #[serde(default)]
     pub webhook_url: Option<String>,
     pub max_file_size_bytes: u64,
+    #[serde(default)]
+    pub sse: SseConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SseConfig {
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default = "default_sse_bind")]
+    pub bind: String,
+}
+
+impl Default for SseConfig {
+    fn default() -> Self {
+        Self {
+            port: 0,
+            bind: default_sse_bind(),
+        }
+    }
+}
+
+fn default_sse_bind() -> String {
+    "127.0.0.1".to_string()
 }

@@ -647,20 +647,20 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
         desktop_notifier: &desktop_notifier,
         webhook_transport: &webhook_transport,
     };
-    let sse_server = if args.sse_port > 0 {
-        match SseServer::start("127.0.0.1", args.sse_port) {
-            Ok(server) => {
-                eprintln!("SSE server listening on 127.0.0.1:{}", server.port());
-                Some(server)
-            }
-            Err(error) => {
-                eprintln!("warning: failed to start SSE server: {error}");
-                None
-            }
-        }
+    // SSE server: CLI flag overrides config; config is hot-reloaded each iteration.
+    let sse_port_from_flag = args.sse_port;
+    let sse_port_override = sse_port_from_flag > 0;
+    let mut current_sse_port: u16 = if sse_port_override {
+        sse_port_from_flag
     } else {
-        None
+        config.sse.port
     };
+    let mut current_sse_bind = if sse_port_override {
+        "127.0.0.1".to_string()
+    } else {
+        config.sse.bind.clone()
+    };
+    let mut sse_server = start_sse_if_enabled(&current_sse_bind, current_sse_port);
 
     let state_db_path = service.state().path().display().to_string();
     let max_iterations = if args.iterations == 0 {
@@ -766,6 +766,26 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
 
         if max_iterations.is_some_and(|limit| completed_iterations >= limit) {
             break;
+        }
+
+        // Hot-reload SSE config from TOML (unless CLI flag overrides).
+        if !sse_port_override {
+            if let Ok(Some(refreshed)) = load_config() {
+                let new_port = refreshed.sse.port;
+                let new_bind = refreshed.sse.bind.clone();
+                if new_port != current_sse_port || new_bind != current_sse_bind {
+                    if let Some(old) = sse_server.take() {
+                        eprintln!(
+                            "SSE config changed ({}:{} -> {}:{}), restarting server",
+                            current_sse_bind, current_sse_port, new_bind, new_port
+                        );
+                        old.shutdown();
+                    }
+                    current_sse_port = new_port;
+                    current_sse_bind = new_bind;
+                    sse_server = start_sse_if_enabled(&current_sse_bind, current_sse_port);
+                }
+            }
         }
 
         thread::sleep(Duration::from_millis(args.poll_interval_ms));
@@ -1048,6 +1068,23 @@ fn runtime_available_for_operational_command(
         "`clawguard {command_name}` requires a detected supported runtime; rerun it after OpenClaw is available"
     );
     false
+}
+
+fn start_sse_if_enabled(bind: &str, port: u16) -> Option<SseServer> {
+    if port == 0 {
+        return None;
+    }
+
+    match SseServer::start(bind, port) {
+        Ok(server) => {
+            eprintln!("SSE server listening on {}:{}", bind, server.port());
+            Some(server)
+        }
+        Err(error) => {
+            eprintln!("warning: failed to start SSE server: {error}");
+            None
+        }
+    }
 }
 
 fn open_state_store_for_home(

@@ -70,6 +70,7 @@ pub fn build_app_config(
         alert_strategy: answers.alert_strategy,
         webhook_url,
         max_file_size_bytes: preset.max_file_size_bytes,
+        sse: Default::default(),
     })
 }
 
