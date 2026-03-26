@@ -177,6 +177,19 @@ cargo build --release
   - restores the last approved `openclaw.json` payload captured during `baseline approve`
 - `clawguard trust exec-approvals`
   - restores the last approved `exec-approvals.json` payload captured during `baseline approve`
+- `clawguard notify`
+  - shows current notification configuration (strategy, webhook, Telegram, SSE)
+  - `clawguard notify --json` emits the notification config as JSON
+- `clawguard notify desktop`
+  - switches to desktop notifications
+- `clawguard notify webhook <url>`
+  - switches to webhook notifications with URL validation
+- `clawguard notify telegram [chat-id]`
+  - enables SSE server and configures Telegram alerts via OpenClaw plugin
+  - if chat-id is omitted, reuses the previously saved value
+  - prints a ready-to-paste `openclaw.json` plugin config snippet
+- `clawguard notify off`
+  - disables all notifications (log-only) and stops the SSE server
 - `clawguard watch`
   - starts the foreground watcher loop for the saved config
   - delivers immediate notifications for newly persisted alerts and evaluates the daily digest during the watch loop
@@ -198,6 +211,10 @@ clawguard alerts ignore alert-openclaw-config
 clawguard scan
 clawguard baseline approve
 clawguard trust openclaw-config
+clawguard notify
+clawguard notify telegram 123456789
+clawguard notify webhook https://hooks.example.com/clawguard
+clawguard notify off
 clawguard watch --iterations 1
 clawguard scan --json
 clawguard status --json

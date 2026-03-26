@@ -188,6 +188,19 @@ cargo build --release
   - 恢复上次 `baseline approve` 时捕获的 `openclaw.json` 内容
 - `clawguard trust exec-approvals`
   - 恢复上次 `baseline approve` 时捕获的 `exec-approvals.json` 内容
+- `clawguard notify`
+  - 查看当前通知配置（策略、webhook、Telegram、SSE）
+  - `clawguard notify --json` 输出通知配置 JSON
+- `clawguard notify desktop`
+  - 切换为桌面通知
+- `clawguard notify webhook <url>`
+  - 切换为 webhook 通知，自动验证 URL 格式
+- `clawguard notify telegram [chat-id]`
+  - 启用 SSE 服务器，配置通过 OpenClaw 插件的 Telegram 告警
+  - 省略 chat-id 时复用之前保存的值
+  - 输出可直接粘贴到 `openclaw.json` 的插件配置片段
+- `clawguard notify off`
+  - 关闭所有通知（仅日志输出）并停止 SSE 服务器
 - `clawguard watch`
   - 启动前台 watch 循环，监听文件变化，推送通知
   - `--iterations 1` 可用于冷启动路径的 smoke test，不会留下长驻进程
@@ -208,6 +221,10 @@ clawguard alerts ignore alert-openclaw-config
 clawguard scan
 clawguard baseline approve
 clawguard trust openclaw-config
+clawguard notify
+clawguard notify telegram 123456789
+clawguard notify webhook https://hooks.example.com/clawguard
+clawguard notify off
 clawguard watch --iterations 1
 clawguard scan --json
 clawguard status --json
