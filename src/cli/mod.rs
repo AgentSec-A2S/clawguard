@@ -790,6 +790,14 @@ fn run_notify_update_command(cli: &Cli, cmd: &NotifyCommands) -> ExitCode {
         }
 
         println!("Run `clawguard watch` to start monitoring.");
+
+        if config.sse.bind == "127.0.0.1" {
+            println!();
+            println!("Note: SSE server will bind to 127.0.0.1 (loopback only).");
+            println!("If OpenClaw runs in Docker, set sse.bind in ~/.clawguard/config.toml:");
+            println!("  [sse]");
+            println!("  bind = \"0.0.0.0\"");
+        }
     }
 
     ExitCode::SUCCESS
@@ -903,11 +911,7 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
     } else {
         config.sse.port
     };
-    let mut current_sse_bind = if sse_port_override {
-        "127.0.0.1".to_string()
-    } else {
-        config.sse.bind.clone()
-    };
+    let mut current_sse_bind = config.sse.bind.clone();
     let mut sse_server = start_sse_if_enabled(&current_sse_bind, current_sse_port);
 
     let state_db_path = service.state().path().display().to_string();

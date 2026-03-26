@@ -259,7 +259,7 @@ impl WatchService {
     ) -> Result<Vec<String>, WatchServiceError> {
         let unresolved_finding_ids: BTreeSet<_> = self
             .state
-            .list_unresolved_alerts()?
+            .list_open_alerts()?
             .into_iter()
             .map(|alert| alert.finding_id)
             .collect();

@@ -6,19 +6,20 @@
  * via the OpenClaw gateway's channel infrastructure.
  *
  * Config in openclaw.json:
+ *   plugins.entries.clawguard.config.host    — SSE host (auto-detected: 127.0.0.1 or host.docker.internal)
  *   plugins.entries.clawguard.config.port    — ClawGuard SSE port (default: 37776)
  *   plugins.entries.clawguard.config.channel — Channel type (telegram, discord, etc.)
  *   plugins.entries.clawguard.config.to      — Target chat/user/channel ID
  */
 
+import { existsSync, readFileSync } from "node:fs";
+
 const DEFAULT_PORT = 37776;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
-const HEARTBEAT_TIMEOUT_MS = 60000;
 
 let feedEnabled = true;
 let reconnectDelay = RECONNECT_BASE_MS;
-let lastEventAt = Date.now();
 
 export default {
   id: "clawguard",
@@ -26,23 +27,30 @@ export default {
 
   register(api) {
     const config = api.pluginConfig || {};
+    const host = config.host || detectHost();
     const port = config.port || DEFAULT_PORT;
     const channel = config.channel;
     const to = config.to;
-    const baseUrl = `http://127.0.0.1:${port}`;
+    const baseUrl = `http://${host}:${port}`;
 
     if (!channel || !to) {
-      api.log?.("clawguard: channel and to are required in plugin config");
+      api.logger.info("[clawguard] channel and to are required in plugin config");
       return;
     }
 
-    // Register background service for SSE consumption
-    api.registerService?.("clawguard-feed", () => {
-      connectStream(api, baseUrl, channel, to);
+    api.logger.info(`[clawguard] SSE target: ${baseUrl}, channel: ${channel}, to: ${to}`);
+
+    // Background service: consume SSE stream from clawguard watch
+    api.registerService({
+      id: "clawguard-alert-feed",
+      start: async () => {
+        connectStream(api, baseUrl, channel, to);
+      },
     });
 
-    // Slash commands (read-only in V1)
-    api.registerCommand?.("clawguard_feed", {
+    // Slash commands
+    api.registerCommand({
+      id: "clawguard_feed",
       description: "Toggle ClawGuard alert feed on/off",
       handler: async () => {
         feedEnabled = !feedEnabled;
@@ -52,7 +60,8 @@ export default {
       },
     });
 
-    api.registerCommand?.("clawguard_status", {
+    api.registerCommand({
+      id: "clawguard_status",
       description: "Show ClawGuard security status",
       handler: async () => {
         try {
@@ -60,12 +69,13 @@ export default {
           const data = await res.json();
           return formatStatus(data);
         } catch {
-          return "ClawGuard is not reachable. Is `clawguard watch --sse-port` running?";
+          return "ClawGuard is not reachable. Is `clawguard watch` running?";
         }
       },
     });
 
-    api.registerCommand?.("clawguard_alerts", {
+    api.registerCommand({
+      id: "clawguard_alerts",
       description: "Show recent ClawGuard alerts",
       handler: async () => {
         try {
@@ -73,7 +83,7 @@ export default {
           const data = await res.json();
           return formatAlertList(data.alerts || []);
         } catch {
-          return "ClawGuard is not reachable. Is `clawguard watch --sse-port` running?";
+          return "ClawGuard is not reachable. Is `clawguard watch` running?";
         }
       },
     });
@@ -84,18 +94,17 @@ export default {
 
 function connectStream(api, baseUrl, channel, to) {
   const url = `${baseUrl}/stream`;
-  api.log?.(`clawguard: connecting to SSE stream at ${url}`);
+  api.logger.info(`[clawguard] connecting to SSE stream at ${url}`);
 
-  // Use native fetch with ReadableStream for SSE
   fetch(url, { headers: { Accept: "text/event-stream" } })
     .then((res) => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      api.log?.("clawguard: connected to SSE stream");
+      api.logger.info("[clawguard] connected to SSE stream");
       reconnectDelay = RECONNECT_BASE_MS;
       return processStream(api, res.body, channel, to);
     })
     .catch((err) => {
-      api.log?.(`clawguard: SSE connection error — ${err.message}`);
+      api.logger.info(`[clawguard] SSE connection error — ${err.message}`);
       scheduleReconnect(api, baseUrl, channel, to);
     });
 }
@@ -115,7 +124,6 @@ async function processStream(api, body, channel, to) {
       buffer = events.remaining;
 
       for (const event of events.parsed) {
-        lastEventAt = Date.now();
         if (!feedEnabled) continue;
 
         if (event.type === "alert") {
@@ -128,17 +136,15 @@ async function processStream(api, body, channel, to) {
       }
     }
   } catch (err) {
-    api.log?.(`clawguard: SSE stream read error — ${err.message}`);
+    api.logger.info(`[clawguard] SSE stream read error — ${err.message}`);
   }
 
-  scheduleReconnect(api, channel, to);
+  scheduleReconnect(api, baseUrl, channel, to);
 }
 
 function scheduleReconnect(api, baseUrl, channel, to) {
   const delay = Math.min(reconnectDelay, RECONNECT_MAX_MS);
-  api.log?.(
-    `clawguard: reconnecting in ${Math.round(delay / 1000)}s`,
-  );
+  api.logger.info(`[clawguard] reconnecting in ${Math.round(delay / 1000)}s`);
   setTimeout(() => connectStream(api, baseUrl, channel, to), delay);
   reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
 }
@@ -225,19 +231,59 @@ function formatAlertList(alerts) {
   return ["\u{1F6E1}\uFE0F Recent Alerts", ...lines].join("\n");
 }
 
+// --- Host Detection ---
+
+/**
+ * Auto-detect whether we are running inside a container.
+ * If /.dockerenv exists or /proc/1/cgroup mentions docker/containerd,
+ * use host.docker.internal so the plugin can reach the host SSE server.
+ * Otherwise assume we are on the host and use 127.0.0.1.
+ */
+function detectHost() {
+  try {
+    if (existsSync("/.dockerenv")) return "host.docker.internal";
+    if (existsSync("/proc/1/cgroup")) {
+      const cgroup = readFileSync("/proc/1/cgroup", "utf8");
+      if (/docker|containerd|kubepods/i.test(cgroup))
+        return "host.docker.internal";
+    }
+  } catch {
+    // read failed — assume host
+  }
+  return "127.0.0.1";
+}
+
 // --- Channel Send ---
 
+const CHANNEL_SEND_MAP = {
+  telegram: { namespace: "telegram", functionName: "sendMessageTelegram" },
+  whatsapp: { namespace: "whatsapp", functionName: "sendMessageWhatsApp" },
+  discord: { namespace: "discord", functionName: "sendMessageDiscord" },
+  slack: { namespace: "slack", functionName: "sendMessageSlack" },
+  signal: { namespace: "signal", functionName: "sendMessageSignal" },
+};
+
 function sendToChannel(api, channel, to, message) {
-  // Use OpenClaw's channel adapter to send messages
-  // The exact API surface depends on the OpenClaw SDK version
-  // This is the expected pattern based on claude-mem's implementation
-  if (api.sendMessage) {
-    api.sendMessage(channel, to, message);
-  } else if (api.channels?.send) {
-    api.channels.send(channel, to, message);
-  } else {
-    api.log?.(
-      `clawguard: no channel send API available — message: ${message.slice(0, 100)}`,
-    );
+  const mapping = CHANNEL_SEND_MAP[channel];
+  if (!mapping) {
+    api.logger.info(`[clawguard] unsupported channel type: ${channel}`);
+    return;
   }
+
+  const channelApi = api.runtime?.channel?.[mapping.namespace];
+  if (!channelApi) {
+    api.logger.info(`[clawguard] channel "${channel}" not available in runtime`);
+    return;
+  }
+
+  const senderFunction = channelApi[mapping.functionName];
+  if (!senderFunction) {
+    api.logger.info(`[clawguard] channel "${channel}" has no ${mapping.functionName} function`);
+    return;
+  }
+
+  senderFunction(to, message).catch((error) => {
+    const msg = error instanceof Error ? error.message : String(error);
+    api.logger.info(`[clawguard] failed to send to ${channel}: ${msg}`);
+  });
 }
