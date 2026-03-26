@@ -348,11 +348,12 @@ fn findings_for_exec_approvals(path: &str, raw: &Value) -> Vec<Finding> {
             let Some(agent) = agents.get(&agent_id).and_then(Value::as_object) else {
                 continue;
             };
-            findings.extend(findings_for_exec_scope(
-                path,
-                &format!("agents.{agent_id}"),
-                agent,
-            ));
+            let scope = format!("agents.{agent_id}");
+            findings.extend(findings_for_exec_scope(path, &scope, agent));
+
+            if let Some(allowlist) = agent.get("allowlist").and_then(Value::as_array) {
+                findings.extend(findings_for_allowlist_entries(path, &scope, allowlist));
+            }
         }
     }
 
@@ -403,7 +404,306 @@ fn findings_for_exec_scope(path: &str, scope: &str, config: &Map<String, Value>)
         ));
     }
 
+    let ask_fallback = string_field(config, "askFallback").map(normalize_lower);
+    if let Some(fallback) = &ask_fallback {
+        if fallback != "deny" {
+            findings.push(build_config_finding(
+                path,
+                "exec-ask-fallback-weak",
+                scope,
+                Severity::Medium,
+                Some(format!("{scope}.askFallback={fallback}")),
+                "This exec approval scope uses a weak ask fallback, which means commands proceed without review when the companion app is unavailable.",
+                "Set askFallback to deny to block unapproved commands when the approval UI is not reachable",
+            ));
+        }
+    }
+
     findings
+}
+
+const DANGEROUS_EXECUTABLES: &[&str] = &["curl", "wget", "nc", "ncat", "telnet"];
+const INTERPRETER_EXECUTABLES: &[&str] = &[
+    "python", "python3", "node", "ruby", "bash", "sh", "zsh", "perl",
+];
+
+fn findings_for_allowlist_entries(path: &str, scope: &str, allowlist: &[Value]) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    for (index, entry) in allowlist.iter().enumerate() {
+        let (entry_id, pattern, last_used_command, last_resolved_path) = match entry {
+            Value::String(s) => (s.clone(), Some(s.clone()), None, None),
+            Value::Object(obj) => {
+                let id = string_field(obj, "id").unwrap_or_else(|| index.to_string());
+                let pat = string_field(obj, "pattern");
+                let cmd = string_field(obj, "lastUsedCommand");
+                let resolved = string_field(obj, "lastResolvedPath");
+                (id, pat, cmd, resolved)
+            }
+            _ => continue,
+        };
+
+        let basename = extract_basename(last_resolved_path.as_deref(), pattern.as_deref());
+        let entry_scope = format!("{scope}.allowlist[{entry_id}]");
+
+        // Check for catastrophic commands first (highest severity).
+        if let Some(cmd) = &last_used_command {
+            if let Some(evidence) = catastrophic_command_evidence(cmd) {
+                findings.push(build_config_finding(
+                    path,
+                    "allowlist-catastrophic-command",
+                    &entry_scope,
+                    Severity::Critical,
+                    Some(format!("{entry_scope}.lastUsedCommand: {evidence}")),
+                    "This exec-approval allowlist entry records a catastrophic command that could destroy data or open a reverse shell.",
+                    "Remove or reset this allowlist entry and audit how it was approved",
+                ));
+            }
+        }
+
+        // Check dangerous executables.
+        if let Some(base) = &basename {
+            let base_lower = normalize_lower(base);
+            if DANGEROUS_EXECUTABLES.iter().any(|&d| d == base_lower) {
+                findings.push(build_config_finding(
+                    path,
+                    "allowlist-dangerous-executable",
+                    &entry_scope,
+                    Severity::High,
+                    Some(format!("{entry_scope}.executable={base}")),
+                    "This exec-approval allowlist entry permits a dangerous executable that is commonly used for data exfiltration or remote code execution.",
+                    "Remove this allowlist entry or restrict it to a safer command scope",
+                ));
+            }
+
+            // Check interpreter executables.
+            if INTERPRETER_EXECUTABLES.iter().any(|&i| i == base_lower) {
+                findings.push(build_config_finding(
+                    path,
+                    "allowlist-interpreter",
+                    &entry_scope,
+                    Severity::High,
+                    Some(format!("{entry_scope}.executable={base}")),
+                    "This exec-approval allowlist entry permits a general-purpose interpreter. Verify that strictInlineEval is enabled in openclaw.json to limit eval-style execution.",
+                    "Verify strictInlineEval is enabled or remove this allowlist entry",
+                ));
+            }
+        }
+    }
+
+    findings
+}
+
+/// Extract the basename of the executable from the resolved path or pattern.
+fn extract_basename(resolved_path: Option<&str>, pattern: Option<&str>) -> Option<String> {
+    if let Some(resolved) = resolved_path {
+        let trimmed = resolved.trim();
+        if !trimmed.is_empty() {
+            return std::path::Path::new(trimmed)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string);
+        }
+    }
+    if let Some(pat) = pattern {
+        let trimmed = pat.trim();
+        if !trimmed.is_empty() {
+            // Pattern like "**/curl" — extract the last path component.
+            return std::path::Path::new(trimmed)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string);
+        }
+    }
+    None
+}
+
+/// Check if a command string contains catastrophic patterns.
+/// Returns `Some(description)` if a catastrophic pattern is found.
+fn catastrophic_command_evidence(command: &str) -> Option<String> {
+    // Check for /dev/tcp anywhere (reverse shell indicator).
+    if command.contains("/dev/tcp") {
+        return Some("reverse shell via /dev/tcp".to_string());
+    }
+
+    // Split on pipe, &&, and ; to get command segments.
+    let segments = split_command_segments(command);
+
+    for (index, segment) in segments.iter().enumerate() {
+        let tokens = tokenize_segment(segment);
+        if tokens.is_empty() {
+            continue;
+        }
+
+        // Check if this segment (after a pipe) receives into sh/bash.
+        if index > 0 {
+            let lead = normalize_lower(&tokens[0]);
+            if lead == "sh" || lead == "bash" {
+                return Some("pipe to shell".to_string());
+            }
+        }
+
+        let lead = normalize_lower(&tokens[0]);
+
+        // rm -rf / or rm -rf ~ or rm -rf /*
+        if lead == "rm" && is_rm_rf_catastrophic(&tokens) {
+            return Some("rm -rf on critical path".to_string());
+        }
+
+        // mkfs as leading command
+        if lead == "mkfs" || lead.starts_with("mkfs.") {
+            return Some("mkfs (filesystem format)".to_string());
+        }
+
+        // chmod 777 / or chmod -R 777
+        if lead == "chmod" && is_chmod_catastrophic(&tokens) {
+            return Some("chmod 777 on critical path".to_string());
+        }
+
+        // dd if=/dev/zero of=/dev/sd*
+        if lead == "dd" && is_dd_catastrophic(&tokens) {
+            return Some("dd targeting block device".to_string());
+        }
+
+        // nc -e or ncat -e as leading tokens
+        if (lead == "nc" || lead == "ncat") && tokens.iter().any(|t| t == "-e") {
+            return Some("nc/ncat with -e (exec)".to_string());
+        }
+    }
+
+    None
+}
+
+/// Split a command string on |, &&, and ; to get individual segments.
+fn split_command_segments(command: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = command.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        let ch = chars[i];
+        if ch == '|' && (i + 1 >= len || chars[i + 1] != '|') {
+            segments.push(std::mem::take(&mut current));
+            i += 1;
+        } else if ch == '&' && i + 1 < len && chars[i + 1] == '&' {
+            segments.push(std::mem::take(&mut current));
+            i += 2;
+        } else if ch == ';' {
+            segments.push(std::mem::take(&mut current));
+            i += 1;
+        } else {
+            current.push(ch);
+            i += 1;
+        }
+    }
+
+    if !current.is_empty() {
+        segments.push(current);
+    }
+
+    segments
+}
+
+/// Simple whitespace tokenizer that respects single and double quotes.
+fn tokenize_segment(segment: &str) -> Vec<String> {
+    let trimmed = segment.trim();
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    for ch in trimmed.chars() {
+        if in_single_quote {
+            if ch == '\'' {
+                in_single_quote = false;
+            } else {
+                current.push(ch);
+            }
+        } else if in_double_quote {
+            if ch == '"' {
+                in_double_quote = false;
+            } else {
+                current.push(ch);
+            }
+        } else if ch == '\'' {
+            in_single_quote = true;
+        } else if ch == '"' {
+            in_double_quote = true;
+        } else if ch.is_whitespace() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    tokens
+}
+
+/// Check if an rm command is catastrophically dangerous.
+fn is_rm_rf_catastrophic(tokens: &[String]) -> bool {
+    // Look for -rf or -r -f or equivalent flag combinations, plus a dangerous target.
+    let has_r = tokens.iter().any(|t| {
+        let lower = normalize_lower(t);
+        lower == "-rf"
+            || lower == "-fr"
+            || lower == "-r"
+            || lower.starts_with("-") && lower.contains('r') && lower.contains('f')
+    });
+
+    if !has_r {
+        return false;
+    }
+
+    // Check if any non-flag token (after the command) is a critical path.
+    tokens.iter().skip(1).any(|t| {
+        if t.starts_with('-') {
+            return false;
+        }
+        let trimmed = t.trim();
+        trimmed == "/" || trimmed == "~" || trimmed == "/*" || trimmed == "~/*"
+    })
+}
+
+/// Check if a chmod command is catastrophically dangerous.
+fn is_chmod_catastrophic(tokens: &[String]) -> bool {
+    let has_777 = tokens.iter().any(|t| t == "777");
+    if !has_777 {
+        return false;
+    }
+
+    let has_recursive = tokens.iter().any(|t| {
+        let lower = normalize_lower(t);
+        lower == "-r" || lower == "--recursive"
+    });
+
+    // chmod 777 / or chmod -R 777
+    let has_critical_path = tokens.iter().skip(1).any(|t| {
+        if t.starts_with('-') || t == "777" {
+            return false;
+        }
+        let trimmed = t.trim();
+        trimmed == "/" || trimmed == "/*"
+    });
+
+    has_recursive || has_critical_path
+}
+
+/// Check if a dd command is catastrophically dangerous (targeting a block device).
+fn is_dd_catastrophic(tokens: &[String]) -> bool {
+    tokens.iter().any(|t| {
+        let lower = normalize_lower(t);
+        lower.starts_with("of=/dev/sd")
+            || lower.starts_with("of=/dev/nvm")
+            || lower.starts_with("of=/dev/hd")
+    })
 }
 
 fn build_config_finding(

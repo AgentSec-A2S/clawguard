@@ -67,6 +67,8 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
 
 - `OpenClaw config audit`
   - looks for dangerous local runtime posture in `openclaw.json`, `exec-approvals.json`, and auth-profile state
+  - tripwire detection: flags allowlist entries pre-approving catastrophic commands (`rm -rf /`, pipe-to-shell, reverse shells)
+  - approval drift: detects policy weakening (`askFallback` relaxed, dangerous executables or interpreters in allowlist)
 - `Skills scan`
   - looks for shell, network, and local-install behaviors that deserve human review
 - `MCP scan`
