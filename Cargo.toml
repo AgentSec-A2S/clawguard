@@ -1,7 +1,14 @@
 [package]
 name = "clawguard"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+description = "Security scanner for OpenClaw and AI agent runtimes"
+license = "MIT"
+repository = "https://github.com/AgentSec-A2S/claw"
+homepage = "https://github.com/AgentSec-A2S/claw/tree/main/clawguard"
+readme = "README.md"
+keywords = ["security", "openclaw", "ai-agent", "scanner"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

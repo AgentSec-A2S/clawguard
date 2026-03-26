@@ -136,17 +136,25 @@ preset
 
 ## 安装
 
-在 `clawguard/` 目录下执行：
+### 快速安装（预编译二进制）
 
 ```bash
-source ~/.cargo/env
+curl -fsSL https://raw.githubusercontent.com/AgentSec-A2S/claw/main/clawguard/install.sh | sh
+```
+
+也可以从 [GitHub Releases](https://github.com/AgentSec-A2S/claw/releases) 页面下载指定版本。
+
+### 从源码构建
+
+```bash
+cd clawguard
 cargo install --path .
 ```
 
-本地开发也可以直接构建 release 二进制：
+本地开发：
 
 ```bash
-source ~/.cargo/env
+cd clawguard
 cargo build --release
 ./target/release/clawguard --help
 ```

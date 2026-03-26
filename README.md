@@ -124,17 +124,25 @@ In practical terms:
 
 ## Install
 
-From `clawguard/`:
+### Quick install (pre-built binary)
 
 ```bash
-source ~/.cargo/env
+curl -fsSL https://raw.githubusercontent.com/AgentSec-A2S/claw/main/clawguard/install.sh | sh
+```
+
+Or download a specific release from the [GitHub Releases](https://github.com/AgentSec-A2S/claw/releases) page.
+
+### Build from source
+
+```bash
+cd clawguard
 cargo install --path .
 ```
 
-For local development you can also build the release binary directly:
+For local development:
 
 ```bash
-source ~/.cargo/env
+cd clawguard
 cargo build --release
 ./target/release/clawguard --help
 ```
