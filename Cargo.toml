@@ -1,6 +1,6 @@
 [package]
 name = "clawguard"
-version = "1.0.0"
+version = "1.0.0-beta.1"
 edition = "2021"
 description = "Security scanner for OpenClaw and AI agent runtimes"
 license = "MIT"

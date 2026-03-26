@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-beta.1] - 2026-03-26
+
+### Beta Pre-release
+
+First public beta for release workflow validation and early testing.
+All V1 features included — see 1.0.0 section below for full feature list.
+
+**New since last push:**
+- `clawguard notify` command family (desktop, webhook, telegram, off)
+- OpenClaw advisory feed with known CVEs
+- Input validation hardening (chat ID, webhook URL)
+
 ## [1.0.0] - 2026-03-26
 
 ### V1 GA Release
