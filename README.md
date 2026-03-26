@@ -89,6 +89,10 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - looks for suspicious auto-install launchers, unpinned packages, and wide filesystem reach
 - `Secrets and env scan`
   - looks for hardcoded secrets, token-like literals, and PEM / SSH private-key material
+- `Device auth and plugin path audit`
+  - flags `dangerouslyDisableDeviceAuth=true` (Critical)
+  - flags plugins installed from insecure paths like `/tmp` (Medium)
+  - flags local filesystem path plugin installs for awareness (Info)
 - `Advisory matching`
   - matches local OpenClaw version evidence against the bundled advisory feed when version evidence is available
 - `Baseline approval`
@@ -272,8 +276,10 @@ Enable in `~/.clawguard/config.toml`:
 ```toml
 [sse]
 port = 37776
-bind = "127.0.0.1"
+bind = "127.0.0.1"   # use "0.0.0.0" for Docker or remote access
 ```
+
+In Docker containers, ClawGuard auto-detects `/.dockerenv` and suggests `host.docker.internal` for plugin connectivity.
 
 Or via CLI: `clawguard watch --sse-port 37776`
 

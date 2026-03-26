@@ -101,6 +101,10 @@ ClawGuard 故意把 detector catalog 控制得很小，只保留高信号项。
   - 检查 MCP 启动链是否有高风险安装与目录暴露模式
 - `Secrets and env scan`
   - 检查是否直接落地了敏感密钥和私钥材料
+- `设备认证和插件路径审计`
+  - 标记 `dangerouslyDisableDeviceAuth=true`（Critical）
+  - 标记从 `/tmp` 等不安全路径安装的 plugin（Medium）
+  - 标记本地文件系统路径安装的 plugin（Info）
 - `Advisory matching`
   - 当能读到版本证据时，将本地版本与 advisory feed 做离线匹配
 - `Baseline approval`
@@ -281,8 +285,10 @@ webhook_url = "https://hooks.example.com/clawguard"
 ```toml
 [sse]
 port = 37776
-bind = "127.0.0.1"
+bind = "127.0.0.1"   # Docker 或远程访问时使用 "0.0.0.0"
 ```
+
+在 Docker 容器中，ClawGuard 会自动检测 `/.dockerenv` 并建议使用 `host.docker.internal` 连接插件。
 
 或通过 CLI：`clawguard watch --sse-port 37776`
 
