@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="AgentSec-A2S/claw"
+REPO="AgentSec-A2S/clawguard"
 BINARY="clawguard"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 

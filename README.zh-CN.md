@@ -139,10 +139,10 @@ preset
 ### 快速安装（预编译二进制）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AgentSec-A2S/claw/main/clawguard/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/AgentSec-A2S/clawguard/main/install.sh | sh
 ```
 
-也可以从 [GitHub Releases](https://github.com/AgentSec-A2S/claw/releases) 页面下载指定版本。
+也可以从 [GitHub Releases](https://github.com/AgentSec-A2S/clawguard/releases) 页面下载指定版本。
 
 ### 从源码构建
 
