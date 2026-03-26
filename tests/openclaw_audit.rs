@@ -1733,3 +1733,34 @@ fn no_plugins_section_produces_no_install_findings() {
         "should produce no plugin install findings when plugins section is absent"
     );
 }
+
+#[test]
+fn plugin_path_containing_tmp_segment_is_not_false_positive() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "installs": {
+                    "cache-plugin": {
+                        "source": "path",
+                        "sourcePath": "/home/user/project/tmp.cache/cache-plugin",
+                        "installPath": "/home/node/.openclaw/extensions/cache-plugin",
+                        "version": "1.0.0"
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+
+    assert!(
+        !output
+            .findings
+            .iter()
+            .any(|f| f.detector_id == "openclaw-config"
+                && f.evidence
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("insecure-plugin")),
+        "path containing /tmp. as a mid-path segment should not be flagged as insecure tmp install"
+    );
+}

@@ -351,3 +351,36 @@ fn shutdown_terminates_the_server_thread() {
         "connections should be refused after server shutdown"
     );
 }
+
+#[test]
+fn sse_stream_does_not_include_wildcard_cors_header() {
+    let port = available_port();
+    let _server = SseServer::start("127.0.0.1", port).expect("server should start");
+    thread::sleep(Duration::from_millis(50));
+
+    let mut stream =
+        TcpStream::connect(format!("127.0.0.1:{port}")).expect("should connect to SSE server");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("should set read timeout");
+    stream
+        .write_all(b"GET /stream HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .expect("should send request");
+    stream.flush().expect("should flush");
+
+    let mut headers = String::new();
+    let mut reader = BufReader::new(&stream);
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("should read header");
+        if line == "\r\n" {
+            break;
+        }
+        headers.push_str(&line);
+    }
+
+    assert!(
+        !headers.contains("Access-Control-Allow-Origin"),
+        "SSE stream should not include CORS header, got: {headers}"
+    );
+}

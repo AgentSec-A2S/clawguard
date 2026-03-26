@@ -17,7 +17,7 @@ use clawguard::scan::{
     collect_scan_evidence, BaselineArtifact, FindingCategory, Fixability, Severity,
 };
 use clawguard::state::db::{StateStore, StateStoreConfig};
-use clawguard::state::model::{BaselineRecord, RestorePayloadRecord};
+use clawguard::state::model::{AlertStatus, BaselineRecord, RestorePayloadRecord};
 use tempfile::tempdir;
 
 #[test]
@@ -1262,6 +1262,142 @@ fn event_rescan_records_drift_alerts_and_debounces_burst_events() {
             .len(),
         1,
         "the same unresolved drift should not create duplicate alerts"
+    );
+}
+
+#[test]
+fn acknowledged_drift_alert_is_not_duplicated_on_next_rescan() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let home_dir = temp_dir.path();
+    let state_dir = home_dir.join(".openclaw");
+    fs::create_dir_all(&state_dir).expect("state dir should be created");
+    let config_path = state_dir.join("openclaw.json");
+    fs::write(
+        &config_path,
+        r#"
+        {
+          agents: {
+            defaults: {
+              sandbox: {
+                mode: "all",
+                docker: {
+                  network: "none",
+                },
+              },
+            },
+          },
+          tools: {
+            exec: {
+              host: "sandbox",
+            },
+          },
+        }
+        "#,
+    )
+    .expect("safe config should be written");
+
+    // Canonicalize to handle macOS /private/var vs /var symlinks
+    let canonical_home = home_dir
+        .canonicalize()
+        .unwrap_or_else(|_| home_dir.to_path_buf());
+    let canonical_config = canonical_home.join(".openclaw").join("openclaw.json");
+
+    let discovery = discover_from_builtin_presets(&DiscoveryOptions {
+        home_dir: Some(canonical_home.clone()),
+        ..DiscoveryOptions::default()
+    });
+    let initial_evidence = collect_scan_evidence(&app_config(), &discovery);
+    let config_artifact = initial_evidence
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.path == canonical_config.display().to_string())
+        .expect("config artifact should be collected");
+
+    let mut service = WatchService::new(
+        app_config(),
+        DiscoveryOptions {
+            home_dir: Some(canonical_home.clone()),
+            ..DiscoveryOptions::default()
+        },
+        open_state_store(&canonical_home),
+    );
+
+    service
+        .state_mut()
+        .replace_baselines_for_source(
+            "config",
+            &[BaselineRecord {
+                path: config_artifact.path.clone(),
+                sha256: config_artifact.sha256.clone(),
+                approved_at_unix_ms: 1_763_899_999_000,
+                source_label: "config".to_string(),
+            }],
+        )
+        .expect("baseline seeding should succeed");
+
+    service
+        .cold_boot_scan(1_763_900_000_000)
+        .expect("initial scan should succeed");
+
+    // Mutate config to trigger drift
+    fs::write(
+        &config_path,
+        r#"
+        {
+          agents: {
+            defaults: {
+              sandbox: {
+                mode: "off",
+                docker: {
+                  network: "host",
+                },
+              },
+            },
+          },
+          tools: {
+            exec: {
+              host: "sandbox",
+            },
+          },
+        }
+        "#,
+    )
+    .expect("risky config should be written");
+
+    // First rescan creates a drift alert
+    let _first = service
+        .handle_event(WatchEvent::new(canonical_config.clone(), 1_763_900_003_000))
+        .expect("first rescan should succeed");
+    let alerts = service
+        .state()
+        .list_unresolved_alerts()
+        .expect("should read alerts");
+    assert_eq!(alerts.len(), 1, "first rescan should create one alert");
+
+    // Acknowledge the alert
+    let alert_id = alerts[0].alert_id.clone();
+    service
+        .state_mut()
+        .update_alert_status(&alert_id, AlertStatus::Acknowledged)
+        .expect("acknowledge should succeed");
+
+    // Second rescan should NOT duplicate the acknowledged alert
+    let _second = service
+        .handle_event(WatchEvent::new(canonical_config, 1_763_900_006_500))
+        .expect("second rescan should succeed");
+    let all_alerts = service
+        .state()
+        .list_unresolved_alerts()
+        .expect("should read alerts after second rescan");
+    assert_eq!(
+        all_alerts.len(),
+        1,
+        "acknowledged alert should not be duplicated on next rescan"
+    );
+    assert_eq!(
+        all_alerts[0].status,
+        AlertStatus::Acknowledged,
+        "alert should remain acknowledged"
     );
 }
 
