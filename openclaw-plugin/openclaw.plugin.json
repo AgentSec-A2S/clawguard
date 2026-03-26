@@ -1,0 +1,23 @@
+{
+  "id": "clawguard",
+  "name": "ClawGuard Security Alerts",
+  "version": "1.0.0",
+  "description": "Forward ClawGuard security alerts to messaging channels via SSE stream",
+  "entry": "index.js",
+  "capabilities": [],
+  "config": {
+    "port": {
+      "type": "number",
+      "default": 37776,
+      "description": "ClawGuard SSE server port"
+    },
+    "channel": {
+      "type": "string",
+      "description": "Target channel type: telegram, discord, signal, slack"
+    },
+    "to": {
+      "type": "string",
+      "description": "Target chat/user/channel ID"
+    }
+  }
+}

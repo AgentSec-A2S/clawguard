@@ -18,6 +18,7 @@ use crate::discovery::{discover_from_builtin_presets, DiscoveryOptions, Discover
 use crate::notify::{
     deliver_daily_digest_if_due_with_services, deliver_pending_alerts_for_route_with_services,
     platform::{CommandDesktopNotifier, PlatformSnapshot},
+    sse::{SseAlertEvent, SseDigestEvent, SseEvent, SseServer},
     webhook::UreqWebhookTransport,
     DailyDigestDeliveryReport, NotificationServices, PendingAlertDeliveryReport,
 };
@@ -106,6 +107,10 @@ struct WatchArgs {
     /// Sleep this long between loop iterations.
     #[arg(long, default_value_t = 1_000)]
     poll_interval_ms: u64,
+
+    /// Start an SSE server on this port for real-time alert streaming. 0 = disabled.
+    #[arg(long, default_value_t = 0)]
+    sse_port: u16,
 }
 
 #[derive(Debug, Serialize)]
@@ -642,6 +647,21 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
         desktop_notifier: &desktop_notifier,
         webhook_transport: &webhook_transport,
     };
+    let sse_server = if args.sse_port > 0 {
+        match SseServer::start("127.0.0.1", args.sse_port) {
+            Ok(server) => {
+                eprintln!("SSE server listening on 127.0.0.1:{}", server.port());
+                Some(server)
+            }
+            Err(error) => {
+                eprintln!("warning: failed to start SSE server: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let state_db_path = service.state().path().display().to_string();
     let max_iterations = if args.iterations == 0 {
         None
@@ -716,6 +736,19 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
                 .iter()
                 .map(|warning| warning_output_from_message(warning)),
         );
+
+        if let Some(ref sse) = sse_server {
+            for alert in &alert_delivery.delivered_alerts {
+                sse.broadcast(SseEvent::Alert(SseAlertEvent::from_alert(alert)));
+            }
+            if digest_delivery.handled && digest_delivery.alert_count > 0 {
+                sse.broadcast(SseEvent::Digest(SseDigestEvent {
+                    alert_count: digest_delivery.alert_count,
+                    summary: digest_delivery.log_line.clone().unwrap_or_default(),
+                }));
+            }
+        }
+
         let output = watch_iteration_output(
             completed_iterations,
             &backend_label,
@@ -736,6 +769,10 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
         }
 
         thread::sleep(Duration::from_millis(args.poll_interval_ms));
+    }
+
+    if let Some(sse) = sse_server {
+        sse.shutdown();
     }
 
     ExitCode::SUCCESS

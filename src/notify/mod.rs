@@ -1,4 +1,5 @@
 pub mod platform;
+pub mod sse;
 pub mod webhook;
 
 use std::fmt::{Display, Formatter};
@@ -35,6 +36,8 @@ pub struct NotificationOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PendingAlertDeliveryReport {
     pub delivered_count: usize,
+    /// The alert records that were successfully delivered during this batch.
+    pub delivered_alerts: Vec<AlertRecord>,
     pub warnings: Vec<String>,
     pub log_lines: Vec<String>,
 }
@@ -176,6 +179,7 @@ pub fn deliver_pending_alerts_for_route_with_services(
 
         if outcome.handled {
             report.delivered_count += 1;
+            report.delivered_alerts.push(alert.clone());
             if let Err(error) = store.record_notification_receipt(&NotificationReceiptRecord {
                 alert_id: alert.alert_id,
                 delivery_route: route_key.to_string(),
