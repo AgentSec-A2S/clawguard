@@ -132,8 +132,11 @@ enum NotifyCommands {
     },
     /// Enable SSE server and configure Telegram alerts via OpenClaw plugin.
     Telegram {
-        /// Telegram chat ID. If omitted, uses previously saved value or a placeholder.
+        /// Telegram chat ID. If omitted, auto-detects from OpenClaw config or uses saved value.
         chat_id: Option<String>,
+        /// Automatically write the plugin config into openclaw.json (creates backup first).
+        #[arg(long)]
+        apply: bool,
     },
     /// Disable all notifications (log-only) and stop SSE server.
     Off,
@@ -686,7 +689,7 @@ fn run_notify_update_command(cli: &Cli, cmd: &NotifyCommands) -> ExitCode {
             changed.push("alert_strategy -> Webhook".to_string());
             changed.push(format!("webhook_url -> {url}"));
         }
-        NotifyCommands::Telegram { chat_id } => {
+        NotifyCommands::Telegram { chat_id, .. } => {
             if let Some(ref id) = chat_id {
                 let trimmed = id.trim();
                 if trimmed.is_empty() {
@@ -709,10 +712,72 @@ fn run_notify_update_command(cli: &Cli, cmd: &NotifyCommands) -> ExitCode {
                 config.telegram_chat_id = Some(trimmed.to_string());
                 changed.push(format!("telegram_chat_id -> {trimmed}"));
             } else if config.telegram_chat_id.is_none() {
-                eprintln!(
-                    "no stored telegram chat ID; provide one: clawguard notify telegram <chat-id>"
-                );
-                return ExitCode::FAILURE;
+                // Auto-detect from OpenClaw config
+                let detected = resolve_openclaw_config_path(&home_dir)
+                    .map(|p| extract_telegram_chat_ids(&p))
+                    .unwrap_or_default();
+
+                if detected.is_empty() {
+                    eprintln!("no telegram chat ID found; provide one: clawguard notify telegram <chat-id>");
+                    return ExitCode::FAILURE;
+                } else if detected.len() == 1 {
+                    let picked = &detected[0];
+                    config.telegram_chat_id = Some(picked.id.clone());
+                    changed.push(format!(
+                        "telegram_chat_id -> {} (auto-detected from {})",
+                        picked.id, picked.source
+                    ));
+                } else if cli.json || cli.no_interactive {
+                    // Non-interactive: only auto-select if exactly 1 high-confidence defaultTo
+                    let high_confidence: Vec<_> =
+                        detected.iter().filter(|c| c.confidence == 1).collect();
+                    if high_confidence.len() == 1 {
+                        config.telegram_chat_id = Some(high_confidence[0].id.clone());
+                        changed.push(format!(
+                            "telegram_chat_id -> {} (auto-detected from {})",
+                            high_confidence[0].id, high_confidence[0].source
+                        ));
+                    } else {
+                        if cli.json {
+                            let output = serde_json::json!({
+                                "mode": "notify_update",
+                                "error": "multiple telegram chat IDs detected",
+                                "detected_chat_ids": detected,
+                            });
+                            if let Ok(s) = serde_json::to_string_pretty(&output) {
+                                println!("{s}");
+                            }
+                        } else {
+                            eprintln!(
+                                "multiple telegram chat IDs detected; specify one explicitly:"
+                            );
+                            for (i, c) in detected.iter().enumerate() {
+                                eprintln!("  [{}] {}  ({})", i + 1, c.id, c.source);
+                            }
+                            eprintln!();
+                            eprintln!("Re-run: clawguard notify telegram <chat-id>");
+                        }
+                        return ExitCode::FAILURE;
+                    }
+                } else {
+                    // Interactive: show list and ask user to re-run
+                    eprintln!(
+                        "Found {} Telegram chat IDs in OpenClaw config:",
+                        detected.len()
+                    );
+                    eprintln!();
+                    for (i, c) in detected.iter().enumerate() {
+                        let label = if c.confidence == 1 {
+                            "  \u{2190} recommended"
+                        } else {
+                            ""
+                        };
+                        eprintln!("  [{}] {}  ({}){}", i + 1, c.id, c.source, label);
+                    }
+                    eprintln!();
+                    eprintln!("Re-run with your choice: clawguard notify telegram <chat-id>");
+                    return ExitCode::FAILURE;
+                }
             }
             config.alert_strategy = AlertStrategy::LogOnly;
             config.webhook_url = None;
@@ -760,33 +825,64 @@ fn run_notify_update_command(cli: &Cli, cmd: &NotifyCommands) -> ExitCode {
         }
         println!();
 
-        if matches!(cmd, NotifyCommands::Telegram { .. }) {
+        if let NotifyCommands::Telegram { apply, .. } = cmd {
             let chat_id_display = config
                 .telegram_chat_id
                 .as_deref()
                 .unwrap_or("<your-chat-id>");
-            let snippet = serde_json::json!({
-                "plugins": {
-                    "entries": {
-                        "clawguard": {
-                            "enabled": true,
-                            "config": {
-                                "port": config.sse.port,
-                                "channel": "telegram",
-                                "to": chat_id_display
+
+            if *apply {
+                // Auto-write plugin config into openclaw.json
+                if let Some(openclaw_path) = resolve_openclaw_config_path(&home_dir) {
+                    match apply_plugin_config_to_openclaw(
+                        &openclaw_path,
+                        config.sse.port,
+                        chat_id_display,
+                    ) {
+                        Ok(backup_path) => {
+                            println!(
+                                "Wrote ClawGuard plugin config to {}",
+                                openclaw_path.display()
+                            );
+                            println!("Backup saved to {}", backup_path.display());
+                            println!();
+                            println!("Note: JSON5 comments in openclaw.json were not preserved.");
+                        }
+                        Err(error) => {
+                            eprintln!("failed to apply plugin config: {error}");
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                } else {
+                    eprintln!("could not find openclaw.json; paste the config manually instead");
+                    return ExitCode::FAILURE;
+                }
+            } else {
+                // Print snippet for manual paste
+                let snippet = serde_json::json!({
+                    "plugins": {
+                        "entries": {
+                            "clawguard": {
+                                "enabled": true,
+                                "config": {
+                                    "port": config.sse.port,
+                                    "channel": "telegram",
+                                    "to": chat_id_display
+                                }
                             }
                         }
                     }
+                });
+                println!("Add this to your openclaw.json to receive alerts in Telegram:");
+                println!();
+                if let Ok(pretty) = serde_json::to_string_pretty(&snippet) {
+                    for line in pretty.lines() {
+                        println!("  {line}");
+                    }
                 }
-            });
-            println!("Add this to your openclaw.json to receive alerts in Telegram:");
-            println!();
-            if let Ok(pretty) = serde_json::to_string_pretty(&snippet) {
-                for line in pretty.lines() {
-                    println!("  {line}");
-                }
+                println!();
+                println!("Or re-run with --apply to write it automatically.");
             }
-            println!();
         }
 
         println!("Run `clawguard watch` to start monitoring.");
@@ -1320,6 +1416,195 @@ fn runtime_available_for_operational_command(
         "`clawguard {command_name}` requires a detected supported runtime; rerun it after OpenClaw is available"
     );
     false
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DetectedChatId {
+    id: String,
+    source: String,
+    confidence: u8,
+}
+
+/// Extract Telegram chat IDs from an OpenClaw config file, ranked by confidence.
+/// confidence: 1=defaultTo (outbound destination), 2=groups/direct keys, 3=allowFrom (inbound auth)
+fn extract_telegram_chat_ids(openclaw_config_path: &Path) -> Vec<DetectedChatId> {
+    let contents = match std::fs::read_to_string(openclaw_config_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let raw: serde_json::Value = match json5::from_str(&contents) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut candidates: Vec<DetectedChatId> = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    let channels_telegram = raw.get("channels").and_then(|c| c.get("telegram"));
+
+    let Some(tg) = channels_telegram else {
+        return Vec::new();
+    };
+
+    // Helper to add a candidate if not already seen
+    let mut add = |id: &str, source: String, confidence: u8| {
+        let normalized = id.trim().to_string();
+        if !normalized.is_empty() && seen.insert(normalized.clone()) {
+            candidates.push(DetectedChatId {
+                id: normalized,
+                source,
+                confidence,
+            });
+        }
+    };
+
+    // Extract from a single TelegramAccountConfig-shaped value
+    let extract_account =
+        |obj: &serde_json::Value, prefix: &str, add: &mut dyn FnMut(&str, String, u8)| {
+            // defaultTo (confidence 1)
+            if let Some(dt) = obj.get("defaultTo") {
+                let val = match dt {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    _ => String::new(),
+                };
+                if !val.is_empty() {
+                    add(&val, format!("{prefix}.defaultTo"), 1);
+                }
+            }
+            // groups keys (confidence 2)
+            if let Some(groups) = obj.get("groups").and_then(|g| g.as_object()) {
+                for key in groups.keys() {
+                    if key != "*" {
+                        add(key, format!("{prefix}.groups.{key}"), 2);
+                    }
+                }
+            }
+            // direct keys (confidence 2)
+            if let Some(direct) = obj.get("direct").and_then(|d| d.as_object()) {
+                for key in direct.keys() {
+                    add(key, format!("{prefix}.direct.{key}"), 2);
+                }
+            }
+            // allowFrom (confidence 3)
+            if let Some(af) = obj.get("allowFrom").and_then(|a| a.as_array()) {
+                for item in af {
+                    let val = match item {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        _ => continue,
+                    };
+                    add(&val, format!("{prefix}.allowFrom"), 3);
+                }
+            }
+        };
+
+    // Top-level telegram config (inherits TelegramAccountConfig)
+    extract_account(tg, "channels.telegram", &mut add);
+
+    // Per-account configs
+    if let Some(accounts) = tg.get("accounts").and_then(|a| a.as_object()) {
+        let mut account_names: Vec<_> = accounts.keys().cloned().collect();
+        account_names.sort();
+        for name in account_names {
+            if let Some(acct) = accounts.get(&name) {
+                extract_account(
+                    acct,
+                    &format!("channels.telegram.accounts.{name}"),
+                    &mut add,
+                );
+            }
+        }
+    }
+
+    // Sort by confidence (lowest number = highest confidence)
+    candidates.sort_by_key(|c| c.confidence);
+    candidates
+}
+
+/// Find the OpenClaw config path from discovery or fall back to the preset path.
+fn resolve_openclaw_config_path(home_dir: &Path) -> Option<PathBuf> {
+    let discovery = discover_from_builtin_presets(&DiscoveryOptions {
+        home_dir: Some(home_dir.to_path_buf()),
+        ..DiscoveryOptions::default()
+    });
+    // Use the first config-domain path from the first detected runtime
+    for runtime in &discovery.runtimes {
+        for target in &runtime.targets {
+            if target.domain == crate::config::schema::ScanDomain::Config {
+                for path in &target.paths {
+                    if path.ends_with("openclaw.json") {
+                        let p = PathBuf::from(path);
+                        if p.exists() {
+                            return Some(p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Fallback to preset path
+    let fallback = home_dir.join(".openclaw").join("openclaw.json");
+    if fallback.exists() {
+        Some(fallback)
+    } else {
+        None
+    }
+}
+
+/// Write the ClawGuard plugin config into an existing openclaw.json file.
+/// Creates a backup before writing. Returns the backup path on success.
+fn apply_plugin_config_to_openclaw(
+    openclaw_config_path: &Path,
+    sse_port: u16,
+    chat_id: &str,
+) -> Result<PathBuf, String> {
+    let contents = std::fs::read_to_string(openclaw_config_path)
+        .map_err(|e| format!("failed to read {}: {e}", openclaw_config_path.display()))?;
+    let mut config: serde_json::Value =
+        json5::from_str(&contents).map_err(|e| format!("failed to parse config: {e}"))?;
+
+    // Create backup
+    let backup_path = openclaw_config_path.with_extension("json.clawguard-backup");
+    std::fs::write(&backup_path, &contents)
+        .map_err(|e| format!("failed to create backup at {}: {e}", backup_path.display()))?;
+
+    // Deep-merge only plugins.entries.clawguard
+    let root = config
+        .as_object_mut()
+        .ok_or("openclaw.json root is not an object")?;
+    let plugins = root
+        .entry("plugins")
+        .or_insert_with(|| serde_json::json!({}));
+    let plugins_obj = plugins.as_object_mut().ok_or("plugins is not an object")?;
+    let entries = plugins_obj
+        .entry("entries")
+        .or_insert_with(|| serde_json::json!({}));
+    let entries_obj = entries
+        .as_object_mut()
+        .ok_or("plugins.entries is not an object")?;
+
+    entries_obj.insert(
+        "clawguard".to_string(),
+        serde_json::json!({
+            "enabled": true,
+            "config": {
+                "port": sse_port,
+                "channel": "telegram",
+                "to": chat_id
+            }
+        }),
+    );
+
+    // Write back via atomic temp+rename
+    let pretty =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("serialization failed: {e}"))?;
+    let tmp_path = openclaw_config_path.with_extension("json.clawguard-tmp");
+    std::fs::write(&tmp_path, &pretty).map_err(|e| format!("failed to write temp file: {e}"))?;
+    std::fs::rename(&tmp_path, openclaw_config_path)
+        .map_err(|e| format!("failed to rename temp file: {e}"))?;
+
+    Ok(backup_path)
 }
 
 fn start_sse_if_enabled(bind: &str, port: u16) -> Option<SseServer> {
