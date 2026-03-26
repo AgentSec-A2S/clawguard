@@ -1,6 +1,6 @@
 # ClawGuard
 
-> [Why ClawGuard Exists](#why-clawguard-exists) | [Current Features](#current-features) | [What It Checks](#what-it-checks-today) | [How It Works](#how-it-works) | [Install](#install) | [Usage](#first-run-and-usage) | [Notifications](#notification-configuration) | [Output Model](#output-model) | [Scope & Limits](#current-v0-scope-and-limits) | [Development](#development)
+> [Why ClawGuard Exists](#why-clawguard-exists) | [Current Features](#current-features) | [What It Checks](#what-it-checks-today) | [How It Works](#how-it-works) | [Install](#install) | [Usage](#first-run-and-usage) | [Notifications](#notification-configuration) | [SSE & Messaging](#sse-server--messaging-integration) | [Output Model](#output-model) | [Scope & Limits](#current-v0-scope-and-limits) | [Development](#development)
 
 ClawGuard is a host-side integrity guardian for OpenClaw.
 
@@ -61,6 +61,15 @@ ClawGuard exists to give you an action-oriented answer:
   - `clawguard` / `clawguard status` human status view
   - `clawguard alerts` history plus `clawguard alerts ignore <alert-id>`
   - `clawguard trust openclaw-config` and `clawguard trust exec-approvals`
+- Embedded SSE server for real-time alert streaming to external consumers:
+  - `--sse-port` or `[sse]` config section enables the server on a dedicated thread
+  - Config hot-reload: change `port` or `bind` in `config.toml` while watching, server restarts automatically
+  - Endpoints: `/stream` (SSE events), `/health`, `/status`, `/alerts`
+  - Localhost-only binding, max 16 clients, 30s heartbeats
+- OpenClaw gateway plugin (`openclaw-plugin/`) for Telegram/Discord/Slack alerts:
+  - Connects to ClawGuard SSE stream with automatic reconnection
+  - Forwards alert and daily digest events to any configured OpenClaw channel
+  - Slash commands: `/clawguard_feed`, `/clawguard_status`, `/clawguard_alerts`
 - Conservative scope: no broad auto-remediation, no background trust UI, no hidden mutation of OpenClaw state
 
 ## What It Checks Today
@@ -211,6 +220,84 @@ webhook_url = "https://hooks.example.com/clawguard"
 
 Daily digest cadence starts when `clawguard watch` first evaluates digest delivery for the saved route.
 ClawGuard seeds the digest cursor on that first evaluation instead of backfilling older alerts, so the first delivered digest only includes alerts created after digest cadence starts.
+
+## SSE Server & Messaging Integration
+
+ClawGuard can stream alerts in real-time to external consumers via an embedded SSE (Server-Sent Events) server.
+
+### Enable the SSE server
+
+Add to `~/.clawguard/config.toml`:
+
+```toml
+[sse]
+port = 37776
+bind = "127.0.0.1"
+```
+
+Or use the CLI flag: `clawguard watch --sse-port 37776`
+
+The server runs on a dedicated thread and never blocks the watch loop. Changing `port` or `bind` in the config file while watching triggers an automatic server restart.
+
+### SSE endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /stream` | SSE event stream (`event: alert`, `event: digest`, `event: heartbeat`) |
+| `GET /health` | Health check: `{"ok":true}` |
+| `GET /status` | Current state: client count, mode |
+| `GET /alerts?limit=10` | Recent alerts as JSON |
+
+### Test with curl
+
+```bash
+# Start watch with SSE
+clawguard watch --sse-port 37776
+
+# In another terminal
+curl -N http://127.0.0.1:37776/stream
+curl http://127.0.0.1:37776/health
+```
+
+### OpenClaw gateway plugin
+
+The `openclaw-plugin/` directory contains a ready-to-use OpenClaw gateway plugin that consumes the SSE stream and forwards alerts to messaging channels (Telegram, Discord, Slack, etc.) through OpenClaw's channel infrastructure.
+
+Add to your `openclaw.json`:
+
+```json5
+{
+  plugins: {
+    entries: {
+      clawguard: {
+        enabled: true,
+        config: {
+          port: 37776,
+          channel: "telegram",
+          to: "123456789"
+        }
+      }
+    }
+  }
+}
+```
+
+Available slash commands in your messaging channel:
+
+| Command | Description |
+|---------|-------------|
+| `/clawguard_feed` | Toggle alert feed on/off |
+| `/clawguard_status` | Show current security status |
+| `/clawguard_alerts` | Show 10 most recent alerts |
+
+Alert messages look like:
+
+```
+🛡️ ClawGuard Alert [HIGH]
+📁 ~/.openclaw/exec-approvals.json
+⚠️ Allowlist entry permits curl — dangerous executable
+💡 Remove this allowlist entry or restrict it
+```
 
 ## Output Model
 
