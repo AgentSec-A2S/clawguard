@@ -1,3 +1,135 @@
 {
-  "advisories": []
+  "advisories": [
+    {
+      "id": "CVE-2026-28473",
+      "title": "Exec Approval Bypass via chat.send -> /approve",
+      "severity": "Critical",
+      "description": "A gateway client with only operator.write scope could approve or deny exec approvals by sending /approve or /deny through chat.send, bypassing the required operator.approvals scope. This undermines the entire manual execution approval security model.",
+      "affected_versions": "< 2026.2.2",
+      "fixed_version": "2026.2.2",
+      "references": [
+        "https://advisories.gitlab.com/pkg/npm/openclaw/CVE-2026-28473/"
+      ]
+    },
+    {
+      "id": "CVE-2026-32302",
+      "title": "Origin Bypass via Trusted-Proxy Mode",
+      "severity": "Critical",
+      "description": "WebSocket connections bypass origin validation when gateway.auth.mode is set to trusted-proxy and proxy headers are present. An attacker-controlled page can inherit the proxy-authenticated identity to perform privileged actions.",
+      "affected_versions": "< 2026.3.11",
+      "fixed_version": "2026.3.11",
+      "references": [
+        "https://snyk.io/vuln/SNYK-JS-OPENCLAW-32302"
+      ]
+    },
+    {
+      "id": "CVE-2026-25253",
+      "title": "1-Click Remote Code Execution (RCE)",
+      "severity": "Critical",
+      "description": "OpenClaw UI and Gateway trusted the gatewayUrl parameter from query strings without validation. Clicking a malicious link could exfiltrate auth tokens or allow RCE by modifying tool policies.",
+      "affected_versions": "< 2026.1.29",
+      "fixed_version": "2026.1.29",
+      "references": [
+        "https://thehackernews.com/2026/01/openclaw-rce-vulnerability.html"
+      ]
+    },
+    {
+      "id": "CVE-2026-25157",
+      "title": "macOS SSH Command Injection",
+      "severity": "High",
+      "description": "Improper sanitization of SSH-related inputs on macOS allowed for arbitrary command injection during remote discovery operations.",
+      "affected_versions": "< 2026.2.0",
+      "fixed_version": "2026.2.0",
+      "references": []
+    },
+    {
+      "id": "CVE-2026-24763",
+      "title": "Docker Sandbox Escape",
+      "severity": "High",
+      "description": "Vulnerability in the default Docker sandbox configuration allowed agents to escape the container boundary and access the host filesystem.",
+      "affected_versions": "< 2026.1.15",
+      "fixed_version": "2026.1.15",
+      "references": []
+    },
+    {
+      "id": "CVE-2026-27001",
+      "title": "Prompt Injection via Workspace Path",
+      "severity": "Medium",
+      "description": "Crafted workspace directory names could be used to inject instructions into the LLM prompt during initialization, potentially leading to unauthorized actions.",
+      "affected_versions": "< 2026.3.0",
+      "fixed_version": "2026.3.0",
+      "references": []
+    },
+    {
+      "id": "CVE-2026-26322",
+      "title": "SSRF in Gateway Image Tool",
+      "severity": "High",
+      "description": "The built-in image processing tool allowed Server-Side Request Forgery (SSRF), enabling attackers to probe internal networks through the gateway.",
+      "affected_versions": "< 2026.2.15",
+      "fixed_version": "2026.2.15",
+      "references": [
+        "https://github.com/openclaw/openclaw/security/advisories/GHSA-56f2-hvwg-5743"
+      ]
+    },
+    {
+      "id": "CVE-2026-26329",
+      "title": "Path Traversal in Browser Upload",
+      "severity": "High",
+      "description": "Browser upload functionality failed to properly sanitize filenames, allowing arbitrary file writes to the host filesystem via path traversal (..).",
+      "affected_versions": "< 2026.2.20",
+      "fixed_version": "2026.2.20",
+      "references": []
+    },
+    {
+      "id": "CVE-2026-26326",
+      "title": "Skills.status Secret Disclosure",
+      "severity": "High",
+      "description": "The skills.status API endpoint accidentally included sensitive environment variables and credentials in its JSON response.",
+      "affected_versions": "< 2026.2.25",
+      "fixed_version": "2026.2.25",
+      "references": []
+    },
+    {
+      "id": "GHSA-5m9r-p9g7-679c",
+      "title": "Zalo Webhook Rate Limit Bypass",
+      "severity": "Moderate",
+      "description": "Rate limiting was applied only after authentication. This allowed brute-force attacks against the Zalo webhook secret.",
+      "affected_versions": "< 2026.3.12",
+      "fixed_version": "2026.3.12",
+      "references": [
+        "https://github.com/openclaw/openclaw/security/advisories/GHSA-5m9r-p9g7-679c"
+      ]
+    },
+    {
+      "id": "GHSA-xc7w-v5x6-cc87",
+      "title": "BlueBubbles Webhook Auth Bypass",
+      "severity": "Moderate",
+      "description": "BlueBubbles webhook handler treated all requests from loopback as authenticated, allowing bypass when behind a reverse proxy.",
+      "affected_versions": "< 2026.2.12",
+      "fixed_version": "2026.2.12",
+      "references": [
+        "https://github.com/openclaw/openclaw/security/advisories/GHSA-xc7w-v5x6-cc87"
+      ]
+    },
+    {
+      "id": "CVE-2026-28463",
+      "title": "Exec Approval Bypass via Glob Pattern Overmatching",
+      "severity": "Moderate",
+      "description": "Flawed glob-to-POSIX translation logic in exec-approvals allowed attackers to execute unauthorized system commands by crafting paths that bypassed allowlist patterns.",
+      "affected_versions": "<= 2026.3.8",
+      "fixed_version": "2026.3.11",
+      "references": []
+    },
+    {
+      "id": "GHSA-7h7g-x2px-94hj",
+      "title": "Credential Exposure in Setup Codes",
+      "severity": "Moderate",
+      "description": "Device pairing mechanism embedded long-lived shared credentials in setup code payloads, allowing attackers to gain persistent access if codes were intercepted.",
+      "affected_versions": "<= 2026.3.11",
+      "fixed_version": "2026.3.12",
+      "references": [
+        "https://github.com/openclaw/openclaw/security/advisories/GHSA-7h7g-x2px-94hj"
+      ]
+    }
+  ]
 }
