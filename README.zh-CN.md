@@ -1,6 +1,6 @@
 # ClawGuard
 
-> [为什么需要](#为什么需要-clawguard) | [当前能力](#当前能力) | [检查项](#现在会检查什么) | [工作方式](#工作方式) | [安装](#安装) | [使用](#首次运行与常用命令) | [输出模型](#输出模型) | [范围与限制](#当前范围与限制) | [开发](#开发)
+> [为什么需要](#为什么需要-clawguard) | [当前能力](#当前能力) | [检查项](#现在会检查什么) | [工作方式](#工作方式) | [安装](#安装) | [使用](#首次运行与常用命令) | [通知配置](#通知配置) | [输出模型](#输出模型) | [范围与限制](#当前范围与限制) | [开发](#开发)
 
 ClawGuard 是一个面向 OpenClaw 的宿主机侧完整性守护工具。
 
@@ -134,7 +134,7 @@ preset
 - 不是沙箱或网络策略引擎
 - 不是通用宿主机监控产品
 - 不是深度多智能体分析平台
-- 不是 V0.5 阶段的自动修复系统
+- 不是自动修复系统
 
 ## 安装
 
@@ -149,14 +149,12 @@ curl -fsSL https://raw.githubusercontent.com/AgentSec-A2S/clawguard/main/install
 ### 从源码构建
 
 ```bash
-cd clawguard
 cargo install --path .
 ```
 
 本地开发：
 
 ```bash
-cd clawguard
 cargo build --release
 ./target/release/clawguard --help
 ```
@@ -183,6 +181,9 @@ cargo build --release
   - 恢复上次 `baseline approve` 时捕获的 `exec-approvals.json` 内容
 - `clawguard watch`
   - 启动前台 watch 循环，监听文件变化，推送通知
+  - `--iterations 1` 可用于冷启动路径的 smoke test，不会留下长驻进程
+- `clawguard --json` 或 `clawguard scan --json`
+  - 输出机器可读的 findings JSON
 - `clawguard --no-interactive` 或 `clawguard scan --no-interactive`
   - 首次运行时接受默认设置，不进行交互
 - 如果没有发现受支持 runtime
@@ -204,6 +205,21 @@ clawguard status --json
 clawguard scan --no-interactive --json
 ```
 
+## 通知配置
+
+首次运行向导会将选择的通知路由保存到 `~/.clawguard/config.toml`。如需后续修改，直接编辑该文件：
+
+```toml
+alert_strategy = "Desktop"
+webhook_url = "https://hooks.example.com/clawguard"
+```
+
+- `alert_strategy = "Desktop"` — 本地会话支持时使用桌面通知，不支持时回退到日志输出
+- `alert_strategy = "Webhook"` — 需要设置 `webhook_url`，URL 必须以 `http://` 或 `https://` 开头
+- `alert_strategy = "LogOnly"` — 所有通知仅输出到前台 `watch` 日志
+
+每日摘要在 `clawguard watch` 首次评估摘要投递时开始计时。ClawGuard 在该次评估时初始化摘要游标，不会回溯旧告警，因此首次投递的摘要只包含游标建立之后创建的告警。
+
 ## 输出模型
 
 ClawGuard 是 findings-first 的。
@@ -223,12 +239,18 @@ ClawGuard 是 findings-first 的。
 
 - 当前是 V1，仍然是 OpenClaw-first，不是多 runtime 产品
 - V1 包含基线批准、前台 watch 循环、通知推送、status/alerts/trust 操作面、tripwire 检测
+- 手动 `scan` 保持 findings-first 且无副作用；通知属于 `watch`
 - `trust` 命令范围严格受限，只恢复 `baseline approve` 时捕获的 payload
 - Tripwire 为纯告警模式，不做实时命令拦截（blocking 推迟至 V1.5+）
 - ClawGuard 不会静默修改 OpenClaw 本地状态
 - bundled advisory feed 目前仍然是保守策略，直到正式生产级 feed 就绪
 - advisory 匹配依赖可读的 OpenClaw 版本证据
-- 退出码仍然是 V0 风格；自动化集成应优先读取 `--json`
+  - 当前支持 colocated `package.json` 或受限 fallback 如 `packages/core/package.json`
+- `dmPolicy=open` 的严重度目前仅按全局 `tools.exec.host` 推断
+  - 尚不支持 per-agent exec host override 反向关联到 channel 级 DM 暴露
+- V0 风格退出码
+  - 即使存在 finding，scan 命令也可能返回 `0`
+  - 自动化集成应优先读取 `--json` 输出
 
 ## 开发
 

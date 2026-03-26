@@ -137,14 +137,12 @@ Or download a specific release from the [GitHub Releases](https://github.com/Age
 ### Build from source
 
 ```bash
-cd clawguard
 cargo install --path .
 ```
 
 For local development:
 
 ```bash
-cd clawguard
 cargo build --release
 ./target/release/clawguard --help
 ```
