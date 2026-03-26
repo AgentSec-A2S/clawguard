@@ -1,6 +1,6 @@
 # ClawGuard
 
-> [Why ClawGuard Exists](#why-clawguard-exists) | [Current Features](#current-features) | [What It Checks](#what-it-checks-today) | [How It Works](#how-it-works) | [Install](#install) | [Usage](#first-run-and-usage) | [Notifications](#notifications) | [Output Model](#output-model) | [Scope & Limits](#current-v0-scope-and-limits) | [Development](#development)
+> [Why ClawGuard Exists](#why-clawguard-exists) | [Current Features](#current-features) | [What It Checks](#what-it-checks-today) | [How It Works](#how-it-works) | [Requirements](#requirements) | [Install](#install) | [Usage](#first-run-and-usage) | [Notifications](#notifications) | [Output Model](#output-model) | [Scope & Limits](#current-v0-scope-and-limits) | [Development](#development)
 
 ClawGuard is a host-side integrity guardian for OpenClaw.
 
@@ -132,6 +132,17 @@ In practical terms:
 - Not a broad host monitoring suite
 - Not a deep multi-agent analysis product
 - Not an auto-remediation system in V0
+
+## Requirements
+
+| Requirement | Details |
+|-------------|---------|
+| **OS** | macOS (Intel / Apple Silicon), Linux (x86_64 / ARM64) |
+| **OpenClaw** | v2026.2.2 or later recommended. Verified against v2026.3.x |
+| **Runtime** | No external runtime dependencies — single static binary |
+| **Build from source** | Rust 1.75+ and Cargo |
+
+ClawGuard detects and scans OpenClaw installations automatically. Other agent runtimes (Claude Code, Codex) are supported via presets but OpenClaw is the primary target.
 
 ## Install
 
