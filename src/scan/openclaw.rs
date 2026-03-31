@@ -138,7 +138,10 @@ fn findings_for_openclaw_config(path: &str, raw: &Value) -> Vec<Finding> {
     findings.extend(findings_for_gateway_bind(path, root));
     findings.extend(findings_for_plugin_hooks(path, root));
     findings.extend(findings_for_plugin_installs(path, root));
-    findings.extend(findings_for_webhook_token(path, root));
+    findings.extend(findings_for_hook_security(path, root));
+    findings.extend(findings_for_hook_mappings(path, root));
+    findings.extend(findings_for_exec_host(path, root));
+    findings.extend(findings_for_sandbox_posture(path, root));
 
     let Some(agent_list) = root
         .get("agents")
@@ -220,23 +223,48 @@ fn findings_for_channel_policies(
         let Some(channel) = channels.get(&channel_name).and_then(Value::as_object) else {
             continue;
         };
-        let Some(dm_policy) = string_field(channel, "dmPolicy").map(normalize_lower) else {
-            continue;
-        };
 
-        if dm_policy != "open" {
-            continue;
+        // Check top-level dmPolicy
+        if let Some(dm_policy) = string_field(channel, "dmPolicy").map(normalize_lower) {
+            if dm_policy == "open" {
+                findings.push(build_config_finding(
+                    path,
+                    "open-dm-policy",
+                    &format!("channels.{channel_name}"),
+                    inbound_dm_severity(global_host),
+                    Some(format!("channels.{channel_name}.dmPolicy=open")),
+                    "This channel accepts direct messages from anyone, which increases the chance that untrusted prompts can reach host-exec paths.",
+                    "Restrict inbound DM exposure before accepting remote commands",
+                ));
+            }
         }
 
-        findings.push(build_config_finding(
-            path,
-            "open-dm-policy",
-            &format!("channels.{channel_name}"),
-            inbound_dm_severity(global_host),
-            Some(format!("channels.{channel_name}.dmPolicy=open")),
-            "This channel accepts direct messages from anyone, which increases the chance that untrusted prompts can reach host-exec paths.",
-            "Restrict inbound DM exposure before accepting remote commands",
-        ));
+        // Walk nested accounts.*.dmPolicy
+        if let Some(accounts) = object_field(channel, "accounts") {
+            let mut account_names: Vec<_> = accounts.keys().cloned().collect();
+            account_names.sort();
+            for account_name in account_names {
+                let Some(acct) = accounts.get(&account_name).and_then(Value::as_object) else {
+                    continue;
+                };
+                let Some(acct_dm) = string_field(acct, "dmPolicy").map(normalize_lower) else {
+                    continue;
+                };
+                if acct_dm == "open" {
+                    findings.push(build_config_finding(
+                        path,
+                        "open-dm-policy",
+                        &format!("channels.{channel_name}.accounts.{account_name}"),
+                        inbound_dm_severity(global_host),
+                        Some(format!(
+                            "channels.{channel_name}.accounts.{account_name}.dmPolicy=open"
+                        )),
+                        "This account accepts direct messages from anyone, which increases the chance that untrusted prompts can reach host-exec paths.",
+                        "Restrict inbound DM exposure before accepting remote commands",
+                    ));
+                }
+            }
+        }
     }
 
     findings
@@ -386,7 +414,7 @@ fn findings_for_plugin_hooks(path: &str, root: &Map<String, Value>) -> Vec<Findi
     findings
 }
 
-fn findings_for_webhook_token(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+fn findings_for_hook_security(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
     let Some(hooks) = object_field(root, "hooks") else {
         return Vec::new();
     };
@@ -394,14 +422,16 @@ fn findings_for_webhook_token(path: &str, root: &Map<String, Value>) -> Vec<Find
         return Vec::new();
     }
 
+    let mut findings = Vec::new();
+
+    // Existing: webhook token missing/empty
     let token_evidence = match hooks.get("token") {
         Some(Value::String(token)) if !token.trim().is_empty() => None,
         Some(Value::String(_)) => Some("hooks.token=<empty>".to_string()),
         _ => Some("hooks.token=<missing>".to_string()),
     };
-
-    token_evidence.map_or_else(Vec::new, |evidence| {
-        vec![build_config_finding(
+    if let Some(evidence) = token_evidence {
+        findings.push(build_config_finding(
             path,
             "webhook-token-missing",
             "hooks",
@@ -409,8 +439,169 @@ fn findings_for_webhook_token(path: &str, root: &Map<String, Value>) -> Vec<Find
             Some(evidence),
             "This hooks configuration does not set a usable token, which weakens authentication on inbound OpenClaw hook endpoints.",
             "Set a webhook token before exposing OpenClaw hook endpoints",
-        )]
-    })
+        ));
+    }
+
+    // New: allowRequestSessionKey
+    if bool_field(hooks, "allowRequestSessionKey").unwrap_or(false) {
+        findings.push(build_config_finding(
+            path,
+            "hook-allows-request-session-key",
+            "hooks",
+            Severity::High,
+            Some("hooks.allowRequestSessionKey=true".to_string()),
+            "External webhook callers can set session keys, enabling session hijacking or replay attacks.",
+            "Remove allowRequestSessionKey or set it to false",
+        ));
+    }
+
+    findings
+}
+
+fn findings_for_hook_mappings(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let Some(hooks) = object_field(root, "hooks") else {
+        return Vec::new();
+    };
+    if bool_field(hooks, "enabled") == Some(false) {
+        return Vec::new();
+    }
+
+    let mut findings = Vec::new();
+
+    // Walk hooks.mappings[]
+    if let Some(mappings) = hooks.get("mappings").and_then(Value::as_array) {
+        for (i, mapping) in mappings.iter().enumerate() {
+            let Some(m) = mapping.as_object() else {
+                continue;
+            };
+            let label = string_field(m, "id").unwrap_or_else(|| format!("{i}"));
+
+            if bool_field(m, "allowUnsafeExternalContent").unwrap_or(false) {
+                findings.push(build_config_finding(
+                    path,
+                    "hook-allows-unsafe-external-content",
+                    &format!("hooks.mappings[{label}]"),
+                    Severity::High,
+                    Some(format!(
+                        "hooks.mappings[{label}].allowUnsafeExternalContent=true"
+                    )),
+                    "External webhook content bypasses safety wrapping for this mapping, allowing prompt injection via webhook.",
+                    "Remove allowUnsafeExternalContent from this hook mapping",
+                ));
+            }
+
+            if let Some(transform) = object_field(m, "transform") {
+                if let Some(module_path) = string_field(transform, "module") {
+                    if module_path.starts_with('/')
+                        || module_path.starts_with("..")
+                        || module_path.contains("/../")
+                    {
+                        findings.push(build_config_finding(
+                            path,
+                            "hook-transform-external-module",
+                            &format!("hooks.mappings[{label}].transform"),
+                            Severity::Medium,
+                            Some(format!(
+                                "hooks.mappings[{label}].transform.module={module_path}"
+                            )),
+                            "Hook transform references a module outside the workspace boundary, which could execute untrusted code on webhook receipt.",
+                            "Use a workspace-relative path for transform modules",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Check hooks.gmail.allowUnsafeExternalContent
+    if let Some(gmail) = object_field(hooks, "gmail") {
+        if bool_field(gmail, "allowUnsafeExternalContent").unwrap_or(false) {
+            findings.push(build_config_finding(
+                path,
+                "hook-allows-unsafe-external-content",
+                "hooks.gmail",
+                Severity::High,
+                Some("hooks.gmail.allowUnsafeExternalContent=true".to_string()),
+                "Gmail hook content bypasses safety wrapping, allowing prompt injection via email.",
+                "Remove allowUnsafeExternalContent from hooks.gmail",
+            ));
+        }
+    }
+
+    findings
+}
+
+fn findings_for_exec_host(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let host = object_field(root, "tools")
+        .and_then(|t| object_field(t, "exec"))
+        .and_then(|e| string_field(e, "host"))
+        .map(normalize_lower);
+
+    if host.as_deref() == Some("node") {
+        return vec![build_config_finding(
+            path,
+            "exec-host-node",
+            "tools.exec",
+            Severity::Medium,
+            Some("tools.exec.host=node".to_string()),
+            "Exec commands run directly on the host Node process without sandbox isolation.",
+            "Set tools.exec.host to 'sandbox' or 'gateway' for containment",
+        )];
+    }
+    Vec::new()
+}
+
+fn findings_for_sandbox_posture(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    // Check agents.defaults.sandbox.mode
+    let defaults_mode = object_field(root, "agents")
+        .and_then(|a| object_field(a, "defaults"))
+        .and_then(|d| object_field(d, "sandbox"))
+        .and_then(|s| string_field(s, "mode"))
+        .map(normalize_lower);
+
+    if defaults_mode.as_deref() == Some("off") {
+        findings.push(build_config_finding(
+            path,
+            "sandbox-disabled",
+            "agents.defaults.sandbox",
+            Severity::Medium,
+            Some("agents.defaults.sandbox.mode=off".to_string()),
+            "Default sandbox is disabled; all agents run without containment unless overridden per-agent.",
+            "Set agents.defaults.sandbox.mode to 'all' or 'non-main'",
+        ));
+    }
+
+    // Check agents.list[*].sandbox.mode
+    if let Some(agents) = object_field(root, "agents") {
+        if let Some(list) = object_field(agents, "list") {
+            let mut agent_ids: Vec<_> = list.keys().cloned().collect();
+            agent_ids.sort();
+            for agent_id in agent_ids {
+                let agent_mode = list
+                    .get(&agent_id)
+                    .and_then(Value::as_object)
+                    .and_then(|a| object_field(a, "sandbox"))
+                    .and_then(|s| string_field(s, "mode"))
+                    .map(normalize_lower);
+
+                if agent_mode.as_deref() == Some("off") {
+                    findings.push(build_config_finding(
+                        path,
+                        "sandbox-disabled",
+                        &format!("agents.list.{agent_id}.sandbox"),
+                        Severity::Medium,
+                        Some(format!("agents.list.{agent_id}.sandbox.mode=off")),
+                        "This agent runs without sandbox containment.",
+                        "Set sandbox.mode to 'all' or 'non-main'",
+                    ));
+                }
+            }
+        }
+    }
+
+    findings
 }
 
 fn findings_for_exec_approvals(path: &str, raw: &Value) -> Vec<Finding> {
