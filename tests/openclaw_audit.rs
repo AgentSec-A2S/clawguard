@@ -1764,3 +1764,307 @@ fn plugin_path_containing_tmp_segment_is_not_false_positive() {
         "path containing /tmp. as a mid-path segment should not be flagged as insecure tmp install"
     );
 }
+
+// ---- hook security detectors (Task 16) ----
+
+#[test]
+fn allow_request_session_key_true_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "hooks": { "enabled": true, "token": "secret", "allowRequestSessionKey": true } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        output
+            .findings
+            .iter()
+            .any(|f| f.evidence.as_deref() == Some("hooks.allowRequestSessionKey=true")),
+        "should flag allowRequestSessionKey=true"
+    );
+}
+
+#[test]
+fn allow_request_session_key_false_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "hooks": { "enabled": true, "token": "secret", "allowRequestSessionKey": false } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("allowRequestSessionKey")),
+        "should not flag allowRequestSessionKey=false"
+    );
+}
+
+#[test]
+fn mapping_allow_unsafe_external_content_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "hooks": {
+                "enabled": true,
+                "token": "secret",
+                "mappings": [
+                    { "id": "test-hook", "allowUnsafeExternalContent": true }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("allowUnsafeExternalContent=true")),
+        "should flag mapping with allowUnsafeExternalContent=true"
+    );
+}
+
+#[test]
+fn mapping_allow_unsafe_external_content_false_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "hooks": {
+                "enabled": true,
+                "token": "secret",
+                "mappings": [
+                    { "id": "safe-hook", "allowUnsafeExternalContent": false }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("allowUnsafeExternalContent")),
+        "should not flag allowUnsafeExternalContent=false"
+    );
+}
+
+#[test]
+fn transform_external_module_path_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "hooks": {
+                "enabled": true,
+                "token": "secret",
+                "mappings": [
+                    { "id": "ext", "transform": { "module": "/etc/evil/transform.js" } }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        output
+            .findings
+            .iter()
+            .any(|f| f.evidence.as_deref().unwrap_or("").contains("/etc/evil")),
+        "should flag absolute transform module path"
+    );
+}
+
+#[test]
+fn transform_workspace_relative_module_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "hooks": {
+                "enabled": true,
+                "token": "secret",
+                "mappings": [
+                    { "id": "local", "transform": { "module": "./hooks/my-transform.js" } }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("transform.module")),
+        "should not flag workspace-relative transform module"
+    );
+}
+
+#[test]
+fn gmail_allow_unsafe_external_content_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "hooks": {
+                "enabled": true,
+                "token": "secret",
+                "gmail": { "allowUnsafeExternalContent": true }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("gmail.allowUnsafeExternalContent=true")),
+        "should flag gmail allowUnsafeExternalContent=true"
+    );
+}
+
+#[test]
+fn no_hooks_section_produces_no_hook_findings() {
+    let (_dir, config_path) = materialize_openclaw_config(r#"{ "gateway": { "mode": "local" } }"#);
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output
+            .findings
+            .iter()
+            .any(|f| f.evidence.as_deref().unwrap_or("").contains("hooks.")),
+        "should produce no hook findings when hooks section absent"
+    );
+}
+
+// ---- nested account dmPolicy (Task 17a) ----
+
+#[test]
+fn nested_account_dm_policy_open_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "channels": {
+                "telegram": {
+                    "accounts": {
+                        "bot1": { "dmPolicy": "open" }
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("accounts.bot1.dmPolicy=open")),
+        "should flag nested account with dmPolicy=open"
+    );
+}
+
+#[test]
+fn nested_account_dm_policy_allowlist_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "channels": {
+                "telegram": {
+                    "accounts": {
+                        "bot1": { "dmPolicy": "allowlist" }
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("accounts.bot1.dmPolicy")),
+        "should not flag nested account with dmPolicy=allowlist"
+    );
+}
+
+// ---- exec host detection (Task 17b) ----
+
+#[test]
+fn exec_host_node_is_flagged() {
+    let (_dir, config_path) =
+        materialize_openclaw_config(r#"{ "tools": { "exec": { "host": "node" } } }"#);
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        output
+            .findings
+            .iter()
+            .any(|f| f.evidence.as_deref() == Some("tools.exec.host=node")),
+        "should flag tools.exec.host=node"
+    );
+}
+
+#[test]
+fn exec_host_sandbox_not_flagged() {
+    let (_dir, config_path) =
+        materialize_openclaw_config(r#"{ "tools": { "exec": { "host": "sandbox" } } }"#);
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output
+            .findings
+            .iter()
+            .any(|f| f.evidence.as_deref() == Some("tools.exec.host=node")),
+        "should not flag tools.exec.host=sandbox as exec-host-node"
+    );
+}
+
+#[test]
+fn exec_host_missing_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(r#"{ "tools": {} }"#);
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output
+            .findings
+            .iter()
+            .any(|f| f.evidence.as_deref().unwrap_or("").contains("exec.host")),
+        "should not flag when tools.exec section is absent"
+    );
+}
+
+// ---- sandbox posture detection (Task 17c) ----
+
+#[test]
+fn sandbox_mode_off_defaults_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "agents": { "defaults": { "sandbox": { "mode": "off" } } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        output
+            .findings
+            .iter()
+            .any(|f| f.evidence.as_deref() == Some("agents.defaults.sandbox.mode=off")),
+        "should flag agents.defaults.sandbox.mode=off"
+    );
+}
+
+#[test]
+fn sandbox_mode_off_per_agent_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "agents": { "list": { "agent1": { "sandbox": { "mode": "off" } } } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        output
+            .findings
+            .iter()
+            .any(|f| f.evidence.as_deref() == Some("agents.list.agent1.sandbox.mode=off")),
+        "should flag per-agent sandbox.mode=off"
+    );
+}
+
+#[test]
+fn sandbox_mode_all_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "agents": { "defaults": { "sandbox": { "mode": "all" } } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("sandbox.mode")),
+        "should not flag sandbox.mode=all"
+    );
+}
