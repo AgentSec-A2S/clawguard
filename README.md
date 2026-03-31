@@ -99,9 +99,12 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - flags `hooks.gmail.allowUnsafeExternalContent=true` — email prompt injection (High)
   - flags `hooks.mappings[].transform.module` pointing outside workspace boundary (Medium)
 - `Exec and sandbox posture`
-  - flags `tools.exec.host=node` — unsandboxed host execution (Medium)
+  - flags `tools.exec.host=node` — unsandboxed host execution, global and per-agent (Medium)
   - flags `agents.defaults.sandbox.mode=off` or per-agent sandbox disabled (Medium)
   - flags `channels.*.accounts.*.dmPolicy=open` at nested account level (Medium)
+- `ACP plugin posture`
+  - flags `plugins.entries.acpx.config.permissionMode=approve-all` — auto-approves all tool calls including exec, spawn, shell, and filesystem writes (High)
+  - skips disabled plugins to avoid false positives on stale config remnants
 - `Advisory matching`
   - matches local OpenClaw version evidence against the bundled advisory feed when version evidence is available
 - `Baseline approval`

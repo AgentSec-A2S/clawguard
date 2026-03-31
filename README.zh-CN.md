@@ -111,9 +111,12 @@ ClawGuard 故意把 detector catalog 控制得很小，只保留高信号项。
   - 标记 `hooks.gmail.allowUnsafeExternalContent=true` — 邮件提示注入（High）
   - 标记 `hooks.mappings[].transform.module` 指向工作区外路径（Medium）
 - `执行和沙箱姿态`
-  - 标记 `tools.exec.host=node` — 无沙箱宿主机执行（Medium）
+  - 标记 `tools.exec.host=node` — 无沙箱宿主机执行，支持全局和单 agent 级别检测（Medium）
   - 标记 `agents.defaults.sandbox.mode=off` 或单 agent 沙箱关闭（Medium）
   - 标记 `channels.*.accounts.*.dmPolicy=open` 嵌套账号级别（Medium）
+- `ACP 插件姿态`
+  - 标记 `plugins.entries.acpx.config.permissionMode=approve-all` — 自动批准所有工具调用，包括 exec、spawn、shell 和文件写入（High）
+  - 跳过已禁用的插件，避免残留配置产生误报
 - `Advisory matching`
   - 当能读到版本证据时，将本地版本与 advisory feed 做离线匹配
 - `Baseline approval`
