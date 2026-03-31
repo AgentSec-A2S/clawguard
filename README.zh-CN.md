@@ -123,6 +123,18 @@ ClawGuard 故意把 detector catalog 控制得很小，只保留高信号项。
   - 尊重 `gateway.nodes.denyCommands` — 被显式拒绝的命令不会被标记
 - `工具配置文件升级`
   - 标记 per-agent `tools.profile` 覆盖全局 `minimal` 配置文件 — 授予超出预期基线的额外工具访问权限（Medium）
+- `沙箱绑定挂载安全`
+  - 标记符号链接绑定挂载源 — TOCTOU 风险，验证后目标可被替换（Medium）
+  - 标记临时目录绑定挂载源（`/tmp`、`/var/tmp`）— 任何本地用户均可写入（Medium）
+  - 标记 `dangerouslyAllowReservedContainerTargets=true` — 允许绑定到 /workspace 或 /agent（High）
+  - 标记 `dangerouslyAllowExternalBindSources=true` — 允许从白名单根目录外部绑定（High）
+  - 同时检查 `docker.binds` 和 `browser.binds`，支持默认配置和 per-agent 配置
+  - 按 agent 解析有效沙箱范围（包括 `perSession` 标志）以避免误报
+- `插件白名单/黑名单配置漂移`
+  - 标记不在 `plugins.allow` 中的插件条目（当白名单已配置时）— 配置策略冲突（Medium）
+  - 标记同时存在于 `plugins.deny` 中的插件条目 — 配置矛盾（Medium）
+  - 跳过禁用的插件（`enabled: false`）和整个插件系统禁用的情况
+  - 定性为配置漂移检测，而非活跃插件暴露 — 运行时优先级决定实际状态
 - `OWASP ASI Top 10 映射`
   - 每个 finding 携带可选 `owasp_asi` 字段，映射到 OWASP Agentic Security Initiative Top 10 分类（ASI02–ASI10）
   - 在 `--json` 输出中渲染，支持合规和报告工作流

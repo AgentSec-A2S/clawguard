@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -144,6 +145,8 @@ fn findings_for_openclaw_config(path: &str, raw: &Value) -> Vec<Finding> {
     findings.extend(findings_for_exec_host(path, root));
     findings.extend(findings_for_sandbox_posture(path, root));
     findings.extend(findings_for_acp_posture(path, root));
+    findings.extend(findings_for_sandbox_binds(path, root));
+    findings.extend(findings_for_plugin_allowlist(path, root));
     findings.extend(findings_for_gateway_node_commands(path, root));
 
     let global_is_minimal = object_field(root, "tools")
@@ -686,6 +689,261 @@ fn findings_for_acp_posture(path: &str, root: &Map<String, Value>) -> Vec<Findin
         )];
     }
     Vec::new()
+}
+
+// ---- V1.2 Sprint 1: Task 31 — Sandbox bind-mount security ----
+
+fn findings_for_sandbox_binds(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    let defaults_sandbox = object_field(root, "agents")
+        .and_then(|a| object_field(a, "defaults"))
+        .and_then(|d| object_field(d, "sandbox"));
+
+    // Check defaults: docker.binds + browser.binds + dangerous booleans
+    if let Some(sandbox) = defaults_sandbox {
+        if let Some(docker) = object_field(sandbox, "docker") {
+            findings.extend(check_binds_array(
+                path,
+                "agents.defaults.sandbox.docker",
+                docker,
+            ));
+            findings.extend(check_dangerous_docker_booleans(
+                path,
+                "agents.defaults.sandbox.docker",
+                docker,
+            ));
+        }
+        if let Some(browser) = object_field(sandbox, "browser") {
+            findings.extend(check_binds_array(
+                path,
+                "agents.defaults.sandbox.browser",
+                browser,
+            ));
+        }
+    }
+
+    // Resolve default scope for fallback (upstream: resolveSandboxScope in config.ts)
+    let defaults_scope = resolve_sandbox_scope(defaults_sandbox);
+
+    // Check per-agent sandbox configs — skip when agent's effective scope is "shared"
+    // (upstream ignores per-agent docker/browser when effective scope == "shared")
+    if let Some(list) = root
+        .get("agents")
+        .and_then(Value::as_object)
+        .and_then(|a| a.get("list"))
+        .and_then(Value::as_array)
+    {
+        for (index, entry) in list.iter().enumerate() {
+            let Some(agent) = entry.as_object() else {
+                continue;
+            };
+            let agent_sandbox = object_field(agent, "sandbox");
+            let effective_scope = resolve_sandbox_scope(agent_sandbox).unwrap_or_else(|| {
+                defaults_scope
+                    .clone()
+                    .unwrap_or_else(|| "agent".to_string())
+            });
+            if effective_scope == "shared" {
+                continue;
+            }
+            let scope = agent_scope(agent, index);
+            if let Some(sandbox) = agent_sandbox {
+                if let Some(docker) = object_field(sandbox, "docker") {
+                    findings.extend(check_binds_array(
+                        path,
+                        &format!("{scope}.sandbox.docker"),
+                        docker,
+                    ));
+                    findings.extend(check_dangerous_docker_booleans(
+                        path,
+                        &format!("{scope}.sandbox.docker"),
+                        docker,
+                    ));
+                }
+                if let Some(browser) = object_field(sandbox, "browser") {
+                    findings.extend(check_binds_array(
+                        path,
+                        &format!("{scope}.sandbox.browser"),
+                        browser,
+                    ));
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+fn check_binds_array(path: &str, scope: &str, container: &Map<String, Value>) -> Vec<Finding> {
+    let Some(binds) = container.get("binds").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut findings = Vec::new();
+    for bind_entry in binds {
+        let Some(bind_str) = bind_entry.as_str() else {
+            continue;
+        };
+        let host_path = bind_str.split(':').next().unwrap_or("").trim();
+        if host_path.is_empty() {
+            continue;
+        }
+
+        // Symlink check (non-existent paths are unscannable — no finding either way)
+        match std::fs::symlink_metadata(host_path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                findings.push(build_config_finding(
+                    path,
+                    "sandbox-bind-symlink",
+                    scope,
+                    Severity::Medium,
+                    Some(format!("{scope}.binds contains symlink {host_path}")),
+                    "A sandbox bind-mount source is a symlink, creating TOCTOU risk where the target can be swapped after validation.",
+                    "Use the resolved absolute path instead of a symlink for bind mounts",
+                ));
+            }
+            Ok(_) => {}  // exists, not a symlink — clean
+            Err(_) => {} // path does not exist — unscannable, skip silently
+        }
+
+        // Temp dir check
+        if is_temp_path(host_path) {
+            findings.push(build_config_finding(
+                path,
+                "sandbox-bind-temp-dir",
+                scope,
+                Severity::Medium,
+                Some(format!("{scope}.binds contains temp path {host_path}")),
+                "A sandbox bind-mount sources from a temporary directory that any local user can write to.",
+                "Use a dedicated, user-owned directory for sandbox bind mounts",
+            ));
+        }
+    }
+    findings
+}
+
+fn check_dangerous_docker_booleans(
+    path: &str,
+    scope: &str,
+    docker: &Map<String, Value>,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    if bool_field(docker, "dangerouslyAllowReservedContainerTargets") == Some(true) {
+        findings.push(build_config_finding(
+            path,
+            "sandbox-dangerous-reserved-targets",
+            scope,
+            Severity::High,
+            Some(format!(
+                "{scope}.dangerouslyAllowReservedContainerTargets=true"
+            )),
+            "Bind mounts are allowed to target reserved container paths like /workspace or /agent, which can override sandbox-managed content.",
+            "Remove dangerouslyAllowReservedContainerTargets or set to false",
+        ));
+    }
+    if bool_field(docker, "dangerouslyAllowExternalBindSources") == Some(true) {
+        findings.push(build_config_finding(
+            path,
+            "sandbox-dangerous-external-sources",
+            scope,
+            Severity::High,
+            Some(format!(
+                "{scope}.dangerouslyAllowExternalBindSources=true"
+            )),
+            "Bind mounts are allowed from paths outside runtime allowlisted roots, expanding the sandbox attack surface.",
+            "Remove dangerouslyAllowExternalBindSources or set to false",
+        ));
+    }
+    findings
+}
+
+// ---- V1.2 Sprint 1: Task 27 — Plugin allowlist/denylist config drift ----
+
+fn findings_for_plugin_allowlist(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let Some(plugins) = object_field(root, "plugins") else {
+        return Vec::new();
+    };
+
+    // When the entire plugin system is disabled, all entries are dormant config — skip
+    if bool_field(plugins, "enabled") == Some(false) {
+        return Vec::new();
+    }
+
+    let mut findings = Vec::new();
+
+    // Collect allow/deny lists
+    let allow_list: Vec<String> = plugins
+        .get("allow")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_lowercase())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let deny_list: Vec<String> = plugins
+        .get("deny")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_lowercase())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let Some(entries) = object_field(plugins, "entries") else {
+        return findings;
+    };
+
+    let has_allowlist = !allow_list.is_empty();
+    let deny_set: HashSet<String> = deny_list.into_iter().collect();
+
+    for (plugin_id, entry_val) in entries.iter() {
+        let Some(entry) = entry_val.as_object() else {
+            continue;
+        };
+        // Skip disabled plugins
+        if bool_field(entry, "enabled") == Some(false) {
+            continue;
+        }
+
+        let normalized_id = plugin_id.trim().to_lowercase();
+
+        // 27a: Not in allowlist (only when allowlist exists)
+        if has_allowlist && !allow_list.contains(&normalized_id) {
+            findings.push(build_config_finding(
+                path,
+                "plugin-not-in-allowlist",
+                &format!("plugins.entries.{plugin_id}"),
+                Severity::Medium,
+                Some(format!(
+                    "plugins.entries.{plugin_id} not in plugins.allow"
+                )),
+                "This plugin entry conflicts with the allowlist policy — it is configured but not in plugins.allow.",
+                "Add this plugin to plugins.allow, disable it, or remove the entry",
+            ));
+        }
+
+        // 27b: In denylist but enabled
+        if deny_set.contains(&normalized_id) {
+            findings.push(build_config_finding(
+                path,
+                "plugin-in-denylist",
+                &format!("plugins.entries.{plugin_id}"),
+                Severity::Medium,
+                Some(format!(
+                    "plugins.entries.{plugin_id} is in plugins.deny"
+                )),
+                "This plugin entry conflicts with the denylist — it is configured but also in plugins.deny.",
+                "Remove this entry or remove it from plugins.deny to resolve the conflict",
+            ));
+        }
+    }
+
+    findings
 }
 
 /// Dangerous node command IDs from OpenClaw's `DEFAULT_DANGEROUS_NODE_COMMANDS`
@@ -1349,6 +1607,23 @@ fn is_loopback_bind(value: &str) -> bool {
         || normalized.starts_with("::1:")
         || normalized == "[::1]"
         || normalized.starts_with("[::1]:")
+}
+
+/// Resolve sandbox scope from a sandbox config object.
+/// Mirrors upstream `resolveSandboxScope()` in config.ts:
+/// 1. Explicit `scope` field takes precedence
+/// 2. `perSession: false` → "shared", `perSession: true` → "session"
+/// 3. Returns None if neither is set (caller provides fallback)
+fn resolve_sandbox_scope(sandbox: Option<&Map<String, Value>>) -> Option<String> {
+    let sandbox = sandbox?;
+    if let Some(scope) = string_field(sandbox, "scope").map(normalize_lower) {
+        return Some(scope);
+    }
+    match bool_field(sandbox, "perSession") {
+        Some(true) => Some("session".to_string()),
+        Some(false) => Some("shared".to_string()),
+        None => None,
+    }
 }
 
 fn object_field<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a Map<String, Value>> {

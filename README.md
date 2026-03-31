@@ -111,6 +111,18 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - respects `gateway.nodes.denyCommands` — explicitly denied commands are not flagged
 - `Tool profile escalation`
   - flags per-agent `tools.profile` overriding global `minimal` profile — grants access to additional tools beyond intended baseline (Medium)
+- `Sandbox bind-mount security`
+  - flags symlink bind-mount sources — TOCTOU risk where the target can be swapped after validation (Medium)
+  - flags temp directory bind-mount sources (`/tmp`, `/var/tmp`) — any local user can write to them (Medium)
+  - flags `dangerouslyAllowReservedContainerTargets=true` — allows bind into /workspace or /agent (High)
+  - flags `dangerouslyAllowExternalBindSources=true` — allows bind from outside allowlisted roots (High)
+  - checks both `docker.binds` and `browser.binds` in defaults and per-agent configs
+  - resolves per-agent effective sandbox scope (including `perSession` flag) to avoid false positives
+- `Plugin allowlist/denylist config drift`
+  - flags plugin entries not in `plugins.allow` when an allowlist is configured — config policy conflict (Medium)
+  - flags plugin entries that are also in `plugins.deny` — contradictory config (Medium)
+  - skips disabled plugins (`enabled: false`) and the entire check when plugin system is disabled
+  - framed as config drift detection, not active plugin exposure — runtime precedence determines actual state
 - `OWASP ASI Top 10 mapping`
   - findings carry an optional `owasp_asi` field mapping to the OWASP Agentic Security Initiative Top 10 categories (ASI02–ASI10)
   - rendered in `--json` output for compliance and reporting workflows

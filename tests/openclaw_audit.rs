@@ -2467,3 +2467,432 @@ fn gateway_node_finding_has_owasp_asi() {
     );
     assert_eq!(finding.owasp_asi.as_deref(), Some("ASI02"));
 }
+
+// ---- V1.2 Sprint 1: Task 31 — Sandbox bind-mount security ----
+
+#[test]
+fn sandbox_bind_temp_dir_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "defaults": {
+                    "sandbox": {
+                        "docker": {
+                            "binds": ["/tmp/data:/data:rw"]
+                        }
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "agents.defaults.sandbox.docker.binds contains temp path /tmp/data",
+    );
+    assert_eq!(finding.severity, Severity::Medium);
+    assert_eq!(finding.owasp_asi.as_deref(), Some("ASI03"));
+}
+
+#[test]
+fn sandbox_bind_normal_path_clean() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "defaults": {
+                    "sandbox": {
+                        "docker": {
+                            "binds": ["/home/user/src:/src:ro"]
+                        }
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output
+            .findings
+            .iter()
+            .any(|f| f.id.contains("sandbox-bind")),
+        "normal bind path should not produce sandbox-bind findings"
+    );
+}
+
+#[test]
+fn sandbox_bind_no_config_clean() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "defaults": {
+                    "sandbox": {
+                        "mode": "all"
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output
+            .findings
+            .iter()
+            .any(|f| f.id.contains("sandbox-bind") || f.id.contains("sandbox-dangerous")),
+        "no docker config should not produce sandbox bind/dangerous findings"
+    );
+}
+
+#[test]
+fn sandbox_dangerous_reserved_targets_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "defaults": {
+                    "sandbox": {
+                        "docker": {
+                            "dangerouslyAllowReservedContainerTargets": true
+                        }
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "agents.defaults.sandbox.docker.dangerouslyAllowReservedContainerTargets=true",
+    );
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(finding.owasp_asi.as_deref(), Some("ASI03"));
+}
+
+#[test]
+fn sandbox_dangerous_external_sources_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "defaults": {
+                    "sandbox": {
+                        "docker": {
+                            "dangerouslyAllowExternalBindSources": true
+                        }
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "agents.defaults.sandbox.docker.dangerouslyAllowExternalBindSources=true",
+    );
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(finding.owasp_asi.as_deref(), Some("ASI03"));
+}
+
+#[test]
+fn sandbox_per_agent_bind_temp_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "list": [
+                    {
+                        "id": "test-agent",
+                        "sandbox": {
+                            "docker": {
+                                "binds": ["/tmp/x:/x"]
+                            }
+                        }
+                    }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "agents.list[test-agent].sandbox.docker.binds contains temp path /tmp/x",
+    );
+    assert_eq!(finding.severity, Severity::Medium);
+}
+
+#[test]
+fn sandbox_per_agent_bind_shared_scope_skipped() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "defaults": {
+                    "sandbox": {
+                        "scope": "shared"
+                    }
+                },
+                "list": [
+                    {
+                        "id": "test-agent",
+                        "sandbox": {
+                            "docker": {
+                                "binds": ["/tmp/x:/x"]
+                            }
+                        }
+                    }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output
+            .findings
+            .iter()
+            .any(|f| f.evidence.as_deref().unwrap_or("").contains("test-agent")),
+        "per-agent binds should be skipped when scope is shared"
+    );
+}
+
+// ---- V1.2 Sprint 1: Task 27 — Plugin allowlist/denylist config drift ----
+
+#[test]
+fn plugin_not_in_allowlist_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "allow": ["plugin-a"],
+                "entries": {
+                    "plugin-b": { "enabled": true }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "plugins.entries.plugin-b not in plugins.allow",
+    );
+    assert_eq!(finding.severity, Severity::Medium);
+    assert_eq!(finding.owasp_asi.as_deref(), Some("ASI06"));
+}
+
+#[test]
+fn plugin_in_allowlist_clean() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "allow": ["plugin-a"],
+                "entries": {
+                    "plugin-a": { "enabled": true }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output
+            .findings
+            .iter()
+            .any(|f| f.id.contains("plugin-not-in-allowlist")),
+        "plugin in allowlist should not be flagged"
+    );
+}
+
+#[test]
+fn plugin_no_allowlist_clean() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "entries": {
+                    "plugin-b": { "enabled": true }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output
+            .findings
+            .iter()
+            .any(|f| f.id.contains("plugin-not-in-allowlist")),
+        "no allowlist means no allowlist drift findings"
+    );
+}
+
+#[test]
+fn plugin_in_denylist_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "deny": ["evil-plugin"],
+                "entries": {
+                    "evil-plugin": { "enabled": true }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "plugins.entries.evil-plugin is in plugins.deny",
+    );
+    assert_eq!(finding.severity, Severity::Medium);
+    assert_eq!(finding.owasp_asi.as_deref(), Some("ASI06"));
+}
+
+#[test]
+fn plugin_disabled_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "allow": ["plugin-a"],
+                "entries": {
+                    "plugin-b": { "enabled": false }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output
+            .findings
+            .iter()
+            .any(|f| f.id.contains("plugin-not-in-allowlist")),
+        "disabled plugin should not be flagged for allowlist drift"
+    );
+}
+
+#[test]
+fn plugin_system_disabled_suppresses_drift_findings() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "plugins": {
+                "enabled": false,
+                "allow": ["plugin-a"],
+                "deny": ["evil"],
+                "entries": {
+                    "plugin-b": { "enabled": true },
+                    "evil": { "enabled": true }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(
+            |f| f.id.contains("plugin-not-in-allowlist") || f.id.contains("plugin-in-denylist")
+        ),
+        "plugins.enabled=false should suppress all allowlist/denylist drift findings"
+    );
+}
+
+#[test]
+fn sandbox_browser_bind_temp_dir_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "defaults": {
+                    "sandbox": {
+                        "browser": {
+                            "binds": ["/tmp/browser-data:/data"]
+                        }
+                    }
+                }
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "agents.defaults.sandbox.browser.binds contains temp path /tmp/browser-data",
+    );
+    assert_eq!(finding.severity, Severity::Medium);
+}
+
+#[test]
+fn sandbox_per_agent_scope_shared_skips_binds() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "list": [
+                    {
+                        "id": "shared-agent",
+                        "sandbox": {
+                            "scope": "shared",
+                            "docker": {
+                                "binds": ["/tmp/x:/x"]
+                            }
+                        }
+                    }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("shared-agent")),
+        "agent with scope=shared should have its per-agent binds skipped"
+    );
+}
+
+#[test]
+fn sandbox_per_agent_per_session_false_skips_binds() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "list": [
+                    {
+                        "id": "shared-via-flag",
+                        "sandbox": {
+                            "perSession": false,
+                            "docker": {
+                                "binds": ["/tmp/y:/y"]
+                            }
+                        }
+                    }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("shared-via-flag")),
+        "agent with perSession=false should resolve to shared scope and skip binds"
+    );
+}
+
+#[test]
+fn sandbox_global_shared_agent_override_non_shared_still_scanned() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "defaults": {
+                    "sandbox": {
+                        "scope": "shared"
+                    }
+                },
+                "list": [
+                    {
+                        "id": "override-agent",
+                        "sandbox": {
+                            "scope": "agent",
+                            "docker": {
+                                "binds": ["/tmp/z:/z"]
+                            }
+                        }
+                    }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "agents.list[override-agent].sandbox.docker.binds contains temp path /tmp/z",
+    );
+    assert_eq!(finding.severity, Severity::Medium);
+}

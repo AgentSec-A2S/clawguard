@@ -87,7 +87,11 @@ pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
         | "exec-ask-off"
         | "auto-allow-skills"
         | "sandbox-disabled"
-        | "sandbox-host-fallback" => Some("ASI03".into()),
+        | "sandbox-host-fallback"
+        | "sandbox-bind-symlink"
+        | "sandbox-bind-temp-dir"
+        | "sandbox-dangerous-reserved-targets"
+        | "sandbox-dangerous-external-sources" => Some("ASI03".into()),
         // ASI04: Data Exfiltration
         "dangerous-network" | "open-dm-policy" => Some("ASI04".into()),
         // ASI05: Configuration Drift
@@ -96,7 +100,9 @@ pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
         | "approval-drift-dangerous-executable"
         | "approval-drift-interpreter" => Some("ASI05".into()),
         // ASI06: Supply Chain Compromise
-        "insecure-plugin-install-path" => Some("ASI06".into()),
+        "insecure-plugin-install-path" | "plugin-not-in-allowlist" | "plugin-in-denylist" => {
+            Some("ASI06".into())
+        }
         // ASI07: Prompt Injection
         "hook-allows-unsafe-external-content"
         | "hook-allows-request-session-key"
