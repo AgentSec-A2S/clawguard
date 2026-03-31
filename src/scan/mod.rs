@@ -292,6 +292,7 @@ pub fn runtime_not_detected_result(expected_config_path: &Path) -> ScanResult {
         },
         fixability: Fixability::AdvisoryOnly,
         fix: None,
+        owasp_asi: None,
     }]])
 }
 

@@ -226,6 +226,7 @@ fn build_advisory_finding(package: &PackageEvidence, advisory: &AdvisoryEntry) -
         },
         fixability: Fixability::Manual,
         fix: None,
+        owasp_asi: None,
     }
 }
 
@@ -246,6 +247,7 @@ fn info_finding(path: &Path, kind: &str, explanation: &str, action_label: &str) 
         },
         fixability: Fixability::AdvisoryOnly,
         fix: None,
+        owasp_asi: None,
     }
 }
 

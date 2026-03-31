@@ -862,6 +862,7 @@ fn sample_alert_with(
             },
             fixability: Fixability::Manual,
             fix: None,
+            owasp_asi: None,
         },
     }
 }

@@ -2274,3 +2274,196 @@ fn per_agent_inherits_global_node_not_double_flagged() {
         "should not flag per-agent when agent inherits from global"
     );
 }
+
+// ---- Sprint 3: Task 22 — Gateway node dangerous command detection ----
+
+#[test]
+fn gateway_node_allow_camera_snap_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "gateway": { "nodes": { "allowCommands": ["camera.snap"] } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "gateway.nodes.allowCommands contains camera.snap",
+    );
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(finding.detector_id, "openclaw-config");
+}
+
+#[test]
+fn gateway_node_deny_commands_suppresses_finding() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "gateway": { "nodes": { "allowCommands": ["sms.send"], "denyCommands": ["sms.send"] } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("gateway.nodes.allowCommands")),
+        "should not flag commands that are also in denyCommands"
+    );
+}
+
+#[test]
+fn gateway_node_allow_sms_send_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "gateway": { "nodes": { "allowCommands": ["sms.send"] } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "gateway.nodes.allowCommands contains sms.send",
+    );
+    assert_eq!(finding.severity, Severity::High);
+}
+
+#[test]
+fn gateway_node_allow_safe_command_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "gateway": { "nodes": { "allowCommands": ["canvas.present"] } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("gateway.nodes.allowCommands")),
+        "should not flag safe node commands"
+    );
+}
+
+#[test]
+fn gateway_node_no_config_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(r#"{ }"#);
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("gateway.nodes.allowCommands")),
+        "should not flag when no gateway.nodes config"
+    );
+}
+
+// ---- Sprint 3: Task 23 — Tool profile minimal override detection ----
+
+#[test]
+fn tool_profile_minimal_override_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "tools": { "profile": "minimal" },
+            "agents": {
+                "list": [
+                    { "id": "escalated-agent", "tools": { "profile": "full" } }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "agents.list[escalated-agent].tools.profile=full (global=minimal)",
+    );
+    assert_eq!(finding.severity, Severity::Medium);
+}
+
+#[test]
+fn tool_profile_both_minimal_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "tools": { "profile": "minimal" },
+            "agents": {
+                "list": [
+                    { "id": "safe-agent", "tools": { "profile": "minimal" } }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("tool-profile")),
+        "should not flag when both profiles are minimal"
+    );
+}
+
+#[test]
+fn tool_profile_global_full_agent_minimal_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "tools": { "profile": "full" },
+            "agents": {
+                "list": [
+                    { "id": "strict-agent", "tools": { "profile": "minimal" } }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("tool-profile")),
+        "should not flag when agent is stricter than global"
+    );
+}
+
+#[test]
+fn tool_profile_no_global_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "list": [
+                    { "id": "agent-with-profile", "tools": { "profile": "full" } }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("tool-profile")),
+        "should not flag when no global profile is set"
+    );
+}
+
+// ---- Sprint 3: Task 24 — OWASP ASI mapping ----
+
+#[test]
+fn acp_finding_has_owasp_asi() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "plugins": { "entries": { "acpx": { "config": { "permissionMode": "approve-all" } } } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "plugins.entries.acpx.config.permissionMode=approve-all",
+    );
+    assert_eq!(finding.owasp_asi.as_deref(), Some("ASI02"));
+}
+
+#[test]
+fn gateway_node_finding_has_owasp_asi() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "gateway": { "nodes": { "allowCommands": ["camera.snap"] } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "gateway.nodes.allowCommands contains camera.snap",
+    );
+    assert_eq!(finding.owasp_asi.as_deref(), Some("ASI02"));
+}

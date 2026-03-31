@@ -108,6 +108,7 @@ fn record_latest_snapshot(home_dir: &Path, warning: Option<&str>) {
         },
         fixability: Fixability::AdvisoryOnly,
         fix: None,
+        owasp_asi: None,
     }];
     let snapshot = ScanSnapshot {
         recorded_at_unix_ms: 1_764_100_000_000,
@@ -158,6 +159,7 @@ fn drift_finding(path: &str) -> Finding {
         },
         fixability: Fixability::Manual,
         fix: None,
+        owasp_asi: None,
     }
 }
 

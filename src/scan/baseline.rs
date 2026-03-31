@@ -154,6 +154,7 @@ fn finding_for_drift(drift: &BaselineDrift) -> Finding {
         },
         fixability: Fixability::Manual,
         fix: None,
+        owasp_asi: None,
     }
 }
 

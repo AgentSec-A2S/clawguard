@@ -61,6 +61,7 @@ fn machine_readable_scan_output_preserves_confidence_and_recommended_action() {
             summary: "Restore the safer command approval mode".to_string(),
             reversible: true,
         }),
+        owasp_asi: None,
     }]]);
 
     let report = result
@@ -130,5 +131,6 @@ fn sample_finding(
         },
         fixability: Fixability::AdvisoryOnly,
         fix: None,
+        owasp_asi: None,
     }
 }

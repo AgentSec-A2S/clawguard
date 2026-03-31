@@ -515,6 +515,7 @@ fn sample_finding(
         },
         fixability: Fixability::Manual,
         fix: None,
+        owasp_asi: None,
     }
 }
 

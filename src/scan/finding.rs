@@ -69,4 +69,42 @@ pub struct Finding {
     pub recommended_action: RecommendedAction,
     pub fixability: Fixability,
     pub fix: Option<FindingFix>,
+    /// OWASP Agentic Security Initiative (ASI) Top 10 category, if mapped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owasp_asi: Option<String>,
+}
+
+/// Map a finding kind to its OWASP ASI Top 10 category.
+pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
+    match kind {
+        // ASI02: Tool Misuse & Abuse
+        "exec-host-node"
+        | "acp-approve-all"
+        | "gateway-node-dangerous-command"
+        | "tool-profile-escalation" => Some("ASI02".into()),
+        // ASI03: Privilege Escalation
+        "exec-security-full"
+        | "exec-ask-off"
+        | "auto-allow-skills"
+        | "sandbox-disabled"
+        | "sandbox-host-fallback" => Some("ASI03".into()),
+        // ASI04: Data Exfiltration
+        "dangerous-network" | "open-dm-policy" => Some("ASI04".into()),
+        // ASI05: Configuration Drift
+        "exec-ask-fallback-weak"
+        | "tripwire-catastrophic"
+        | "approval-drift-dangerous-executable"
+        | "approval-drift-interpreter" => Some("ASI05".into()),
+        // ASI06: Supply Chain Compromise
+        "insecure-plugin-install-path" => Some("ASI06".into()),
+        // ASI07: Prompt Injection
+        "hook-allows-unsafe-external-content"
+        | "hook-allows-request-session-key"
+        | "plugin-hook-prompt-injection" => Some("ASI07".into()),
+        // ASI09: Secrets Exposure (note: secrets detector sets ASI09 directly, this is a fallback)
+        "private-key" => Some("ASI09".into()),
+        // ASI10: Insecure Defaults
+        "dangerous-disable-device-auth" | "gateway-bind-exposed" => Some("ASI10".into()),
+        _ => None,
+    }
 }

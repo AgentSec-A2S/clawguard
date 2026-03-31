@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use super::finding::owasp_asi_for_kind;
 use super::{Finding, FindingCategory, Fixability, RecommendedAction, RuntimeConfidence, Severity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +144,13 @@ fn findings_for_openclaw_config(path: &str, raw: &Value) -> Vec<Finding> {
     findings.extend(findings_for_exec_host(path, root));
     findings.extend(findings_for_sandbox_posture(path, root));
     findings.extend(findings_for_acp_posture(path, root));
+    findings.extend(findings_for_gateway_node_commands(path, root));
+
+    let global_is_minimal = object_field(root, "tools")
+        .and_then(|t| string_field(t, "profile"))
+        .map(normalize_lower)
+        .as_deref()
+        == Some("minimal");
 
     let Some(agent_list) = root
         .get("agents")
@@ -214,6 +222,28 @@ fn findings_for_openclaw_config(path: &str, raw: &Value) -> Vec<Finding> {
                 "This agent routes exec commands directly through the host Node process without sandbox isolation.",
                 "Set this agent's tools.exec.host to 'sandbox' or remove the override to inherit the global setting",
             ));
+        }
+
+        // Per-agent tool profile escalation: global=minimal overridden by per-agent != minimal.
+        if global_is_minimal {
+            if let Some(agent_p) = object_field(agent, "tools")
+                .and_then(|t| string_field(t, "profile"))
+                .map(normalize_lower)
+            {
+                if agent_p != "minimal" {
+                    findings.push(build_config_finding(
+                        path,
+                        "tool-profile-escalation",
+                        &format!("{agent_scope}.tools"),
+                        Severity::Medium,
+                        Some(format!(
+                            "{agent_scope}.tools.profile={agent_p} (global=minimal)"
+                        )),
+                        "This agent overrides the global minimal tool profile, granting access to additional tools.",
+                        "Set agent tools.profile to 'minimal' or remove the override",
+                    ));
+                }
+            }
         }
     }
 
@@ -656,6 +686,62 @@ fn findings_for_acp_posture(path: &str, root: &Map<String, Value>) -> Vec<Findin
         )];
     }
     Vec::new()
+}
+
+/// Dangerous node command IDs from OpenClaw's `DEFAULT_DANGEROUS_NODE_COMMANDS`
+/// (node-command-policy.ts L67-74). These require explicit opt-in via allowCommands.
+const DANGEROUS_NODE_COMMANDS: &[&str] = &[
+    "camera.snap",
+    "camera.clip",
+    "screen.record",
+    "contacts.add",
+    "calendar.add",
+    "reminders.add",
+    "sms.send",
+    "sms.search",
+];
+
+fn findings_for_gateway_node_commands(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let Some(nodes) = object_field(root, "gateway").and_then(|g| object_field(g, "nodes")) else {
+        return Vec::new();
+    };
+
+    // Collect denyCommands so we can suppress findings for explicitly blocked commands.
+    let deny_set: std::collections::HashSet<String> = nodes
+        .get("denyCommands")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_lowercase())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut findings = Vec::new();
+    if let Some(allow) = nodes.get("allowCommands").and_then(Value::as_array) {
+        for entry in allow {
+            if let Some(cmd) = entry.as_str() {
+                let normalized = cmd.trim().to_lowercase();
+                // Skip if the command is explicitly denied (denyCommands takes precedence).
+                if deny_set.contains(&normalized) {
+                    continue;
+                }
+                if DANGEROUS_NODE_COMMANDS.contains(&normalized.as_str()) {
+                    findings.push(build_config_finding(
+                        path,
+                        "gateway-node-dangerous-command",
+                        "gateway.nodes.allowCommands",
+                        Severity::High,
+                        Some(format!("gateway.nodes.allowCommands contains {cmd}")),
+                        "A high-risk node command is explicitly allowed on gateway nodes, enabling sensitive device access via paired nodes.",
+                        "Remove this command from gateway.nodes.allowCommands unless explicitly required",
+                    ));
+                }
+            }
+        }
+    }
+    findings
 }
 
 fn findings_for_exec_approvals(path: &str, raw: &Value) -> Vec<Finding> {
@@ -1108,6 +1194,7 @@ fn build_config_finding(
         },
         fixability: Fixability::Manual,
         fix: None,
+        owasp_asi: owasp_asi_for_kind(kind),
     }
 }
 

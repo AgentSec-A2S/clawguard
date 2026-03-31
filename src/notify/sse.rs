@@ -352,6 +352,7 @@ mod tests {
                 },
                 fixability: Fixability::Manual,
                 fix: None,
+                owasp_asi: None,
             },
         };
 

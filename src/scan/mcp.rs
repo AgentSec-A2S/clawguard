@@ -209,6 +209,7 @@ fn build_finding(
         },
         fixability: Fixability::Manual,
         fix: None,
+        owasp_asi: super::finding::owasp_asi_for_kind(kind),
     }
 }
 

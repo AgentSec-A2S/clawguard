@@ -832,6 +832,7 @@ fn snapshot_round_trip_preserves_special_characters() {
             },
             fixability: Fixability::AdvisoryOnly,
             fix: None,
+            owasp_asi: None,
         }],
     };
 
@@ -873,6 +874,7 @@ fn sample_finding(id: &str, severity: Severity) -> Finding {
         },
         fixability: Fixability::AdvisoryOnly,
         fix: None,
+        owasp_asi: None,
     }
 }
 

@@ -234,6 +234,7 @@ fn shell_execution_finding(
         },
         fixability: Fixability::AdvisoryOnly,
         fix: None,
+        owasp_asi: None,
     })
 }
 
@@ -272,6 +273,7 @@ fn network_finding(
         },
         fixability: Fixability::AdvisoryOnly,
         fix: None,
+        owasp_asi: None,
     })
 }
 
@@ -308,6 +310,7 @@ fn install_finding(
         },
         fixability: Fixability::AdvisoryOnly,
         fix: None,
+        owasp_asi: None,
     })
 }
 

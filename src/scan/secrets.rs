@@ -272,6 +272,7 @@ fn build_finding(
         },
         fixability: Fixability::Manual,
         fix: None,
+        owasp_asi: Some("ASI09".into()), // All secrets findings map to ASI09
     }
 }
 
