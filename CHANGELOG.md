@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.0-beta.2] - 2026-03-31
+
+### Beta 2
+
+- `clawguard notify telegram` auto-detects chat IDs from OpenClaw `channels.telegram` config
+- `--apply` flag writes plugin config into openclaw.json automatically (with backup)
+- 3 new detectors: `dangerous-disable-device-auth` (Critical), `insecure-plugin-install-path` (Medium), `plugin-source-path-install` (Info)
+- Zero-findings UX shows scan summary (runtime, file counts, strictness)
+- SSE CORS wildcard removed for security
+- Alert dedup restored to `list_unresolved_alerts` so `alerts ignore` is durable
+- `is_temp_path` false positive fix
+- Docker SSE bind auto-detection and plugin API alignment
+- 8 new regression tests
+
 ## [1.0.0-beta.1] - 2026-03-26
 
 ### Beta Pre-release
