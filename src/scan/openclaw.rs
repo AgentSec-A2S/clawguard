@@ -492,9 +492,12 @@ fn findings_for_hook_mappings(path: &str, root: &Map<String, Value>) -> Vec<Find
 
             if let Some(transform) = object_field(m, "transform") {
                 if let Some(module_path) = string_field(transform, "module") {
-                    if module_path.starts_with('/')
-                        || module_path.starts_with("..")
-                        || module_path.contains("/../")
+                    let normalized = module_path.replace('\\', "/");
+                    let has_traversal = normalized.split('/').any(|segment| segment == "..");
+                    if normalized.starts_with('/')
+                        || normalized.starts_with('~')
+                        || normalized.contains(':')
+                        || has_traversal
                     {
                         findings.push(build_config_finding(
                             path,
@@ -573,30 +576,33 @@ fn findings_for_sandbox_posture(path: &str, root: &Map<String, Value>) -> Vec<Fi
         ));
     }
 
-    // Check agents.list[*].sandbox.mode
-    if let Some(agents) = object_field(root, "agents") {
-        if let Some(list) = object_field(agents, "list") {
-            let mut agent_ids: Vec<_> = list.keys().cloned().collect();
-            agent_ids.sort();
-            for agent_id in agent_ids {
-                let agent_mode = list
-                    .get(&agent_id)
-                    .and_then(Value::as_object)
-                    .and_then(|a| object_field(a, "sandbox"))
-                    .and_then(|s| string_field(s, "mode"))
-                    .map(normalize_lower);
+    // Check agents.list[*].sandbox.mode (agents.list is an array in OpenClaw schema)
+    let agent_list = root
+        .get("agents")
+        .and_then(Value::as_object)
+        .and_then(|agents| agents.get("list"))
+        .and_then(Value::as_array);
 
-                if agent_mode.as_deref() == Some("off") {
-                    findings.push(build_config_finding(
-                        path,
-                        "sandbox-disabled",
-                        &format!("agents.list.{agent_id}.sandbox"),
-                        Severity::Medium,
-                        Some(format!("agents.list.{agent_id}.sandbox.mode=off")),
-                        "This agent runs without sandbox containment.",
-                        "Set sandbox.mode to 'all' or 'non-main'",
-                    ));
-                }
+    if let Some(list) = agent_list {
+        for (index, entry) in list.iter().enumerate() {
+            let Some(agent) = entry.as_object() else {
+                continue;
+            };
+            let agent_id = string_field(agent, "id").unwrap_or_else(|| format!("{index}"));
+            let agent_mode = object_field(agent, "sandbox")
+                .and_then(|s| string_field(s, "mode"))
+                .map(normalize_lower);
+
+            if agent_mode.as_deref() == Some("off") {
+                findings.push(build_config_finding(
+                    path,
+                    "sandbox-disabled",
+                    &format!("agents.list[{agent_id}].sandbox"),
+                    Severity::Medium,
+                    Some(format!("agents.list[{agent_id}].sandbox.mode=off")),
+                    "This agent runs without sandbox containment.",
+                    "Set sandbox.mode to 'all' or 'non-main'",
+                ));
             }
         }
     }

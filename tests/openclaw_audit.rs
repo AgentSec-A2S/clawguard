@@ -1894,6 +1894,54 @@ fn transform_workspace_relative_module_not_flagged() {
 }
 
 #[test]
+fn transform_dot_dot_slash_bypass_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "hooks": {
+                "enabled": true,
+                "token": "secret",
+                "mappings": [
+                    { "id": "bypass", "transform": { "module": "./../../etc/evil.js" } }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("transform.module")),
+        "should flag ./../../ traversal bypass"
+    );
+}
+
+#[test]
+fn transform_tilde_path_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "hooks": {
+                "enabled": true,
+                "token": "secret",
+                "mappings": [
+                    { "id": "tilde", "transform": { "module": "~/evil.js" } }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("transform.module")),
+        "should flag tilde home directory path"
+    );
+}
+
+#[test]
 fn gmail_allow_unsafe_external_content_is_flagged() {
     let (_dir, config_path) = materialize_openclaw_config(
         r#"{
@@ -2041,14 +2089,14 @@ fn sandbox_mode_off_defaults_is_flagged() {
 #[test]
 fn sandbox_mode_off_per_agent_is_flagged() {
     let (_dir, config_path) = materialize_openclaw_config(
-        r#"{ "agents": { "list": { "agent1": { "sandbox": { "mode": "off" } } } } }"#,
+        r#"{ "agents": { "list": [{ "id": "agent1", "sandbox": { "mode": "off" } }] } }"#,
     );
     let output = scan_openclaw_state(&[config_path], 1024 * 1024);
     assert!(
         output
             .findings
             .iter()
-            .any(|f| f.evidence.as_deref() == Some("agents.list.agent1.sandbox.mode=off")),
+            .any(|f| f.evidence.as_deref() == Some("agents.list[agent1].sandbox.mode=off")),
         "should flag per-agent sandbox.mode=off"
     );
 }
