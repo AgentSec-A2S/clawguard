@@ -142,6 +142,7 @@ fn findings_for_openclaw_config(path: &str, raw: &Value) -> Vec<Finding> {
     findings.extend(findings_for_hook_mappings(path, root));
     findings.extend(findings_for_exec_host(path, root));
     findings.extend(findings_for_sandbox_posture(path, root));
+    findings.extend(findings_for_acp_posture(path, root));
 
     let Some(agent_list) = root
         .get("agents")
@@ -199,6 +200,20 @@ fn findings_for_openclaw_config(path: &str, raw: &Value) -> Vec<Finding> {
                     "Use a non-dangerous sandbox network mode",
                 ));
             }
+        }
+
+        // Per-agent exec host = node (uses agent_exec_host directly to avoid
+        // double-flagging when the agent merely inherits the global setting).
+        if agent_exec_host(agent).as_deref() == Some("node") {
+            findings.push(build_config_finding(
+                path,
+                "exec-host-node",
+                &format!("{agent_scope}.tools.exec"),
+                Severity::Medium,
+                Some(format!("{agent_scope}.tools.exec.host=node")),
+                "This agent routes exec commands directly through the host Node process without sandbox isolation.",
+                "Set this agent's tools.exec.host to 'sandbox' or remove the override to inherit the global setting",
+            ));
         }
     }
 
@@ -608,6 +623,39 @@ fn findings_for_sandbox_posture(path: &str, root: &Map<String, Value>) -> Vec<Fi
     }
 
     findings
+}
+
+fn findings_for_acp_posture(path: &str, root: &Map<String, Value>) -> Vec<Finding> {
+    let Some(plugin_entries) =
+        object_field(root, "plugins").and_then(|p| object_field(p, "entries"))
+    else {
+        return Vec::new();
+    };
+    let Some(acpx) = object_field(plugin_entries, "acpx") else {
+        return Vec::new();
+    };
+    // Skip disabled plugins — stale config remnants should not produce findings.
+    if bool_field(acpx, "enabled") == Some(false) {
+        return Vec::new();
+    }
+    let Some(config) = object_field(acpx, "config") else {
+        return Vec::new();
+    };
+    let Some(mode) = string_field(config, "permissionMode").map(normalize_lower) else {
+        return Vec::new();
+    };
+    if mode == "approve-all" {
+        return vec![build_config_finding(
+            path,
+            "acp-approve-all",
+            "plugins.entries.acpx.config",
+            Severity::High,
+            Some("plugins.entries.acpx.config.permissionMode=approve-all".to_string()),
+            "The ACPX plugin auto-approves all tool calls including exec, spawn, shell, and filesystem writes.",
+            "Set permissionMode to 'approve-reads' or 'deny-all'",
+        )];
+    }
+    Vec::new()
 }
 
 fn findings_for_exec_approvals(path: &str, raw: &Value) -> Vec<Finding> {

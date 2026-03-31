@@ -2116,3 +2116,161 @@ fn sandbox_mode_all_not_flagged() {
         "should not flag sandbox.mode=all"
     );
 }
+
+// ---- Sprint 2: Task 18 — ACP permission mode detection ----
+
+#[test]
+fn acp_approve_all_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "plugins": { "entries": { "acpx": { "config": { "permissionMode": "approve-all" } } } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "plugins.entries.acpx.config.permissionMode=approve-all",
+    );
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(finding.detector_id, "openclaw-config");
+    assert_eq!(
+        finding.recommended_action.label,
+        "Set permissionMode to 'approve-reads' or 'deny-all'"
+    );
+}
+
+#[test]
+fn acp_approve_reads_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "plugins": { "entries": { "acpx": { "config": { "permissionMode": "approve-reads" } } } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("permissionMode")),
+        "should not flag permissionMode=approve-reads"
+    );
+}
+
+#[test]
+fn acp_deny_all_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "plugins": { "entries": { "acpx": { "config": { "permissionMode": "deny-all" } } } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("permissionMode")),
+        "should not flag permissionMode=deny-all"
+    );
+}
+
+#[test]
+fn acp_no_acpx_plugin_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(r#"{ "plugins": { "entries": {} } }"#);
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("permissionMode")),
+        "should not flag when acpx plugin is absent"
+    );
+}
+
+#[test]
+fn acp_disabled_plugin_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{ "plugins": { "entries": { "acpx": { "enabled": false, "config": { "permissionMode": "approve-all" } } } } }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("permissionMode")),
+        "should not flag disabled acpx plugin even with approve-all config"
+    );
+}
+
+// ---- Sprint 2: Task 19 — Per-agent exec host node detection ----
+
+#[test]
+fn per_agent_exec_host_node_is_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "list": [
+                    { "id": "risky-agent", "tools": { "exec": { "host": "node" } } }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let finding = finding_with_evidence(
+        &output.findings,
+        "agents.list[risky-agent].tools.exec.host=node",
+    );
+    assert_eq!(finding.severity, Severity::Medium);
+    assert_eq!(finding.detector_id, "openclaw-config");
+}
+
+#[test]
+fn per_agent_exec_host_sandbox_not_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "agents": {
+                "list": [
+                    { "id": "safe-agent", "tools": { "exec": { "host": "sandbox" } } }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("exec.host=node")),
+        "should not flag per-agent exec.host=node when host is sandbox"
+    );
+}
+
+#[test]
+fn per_agent_inherits_global_node_not_double_flagged() {
+    let (_dir, config_path) = materialize_openclaw_config(
+        r#"{
+            "tools": { "exec": { "host": "node" } },
+            "agents": {
+                "list": [
+                    { "id": "inheriting-agent" }
+                ]
+            }
+        }"#,
+    );
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    // Global finding should exist
+    assert!(
+        output
+            .findings
+            .iter()
+            .any(|f| f.evidence.as_deref() == Some("tools.exec.host=node")),
+        "global exec-host-node should still be flagged"
+    );
+    // No per-agent finding for the inheriting agent
+    assert!(
+        !output.findings.iter().any(|f| f
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("inheriting-agent")),
+        "should not flag per-agent when agent inherits from global"
+    );
+}
