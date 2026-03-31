@@ -105,6 +105,15 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
 - `ACP plugin posture`
   - flags `plugins.entries.acpx.config.permissionMode=approve-all` — auto-approves all tool calls including exec, spawn, shell, and filesystem writes (High)
   - skips disabled plugins to avoid false positives on stale config remnants
+- `Gateway node command policy`
+  - flags dangerous commands in `gateway.nodes.allowCommands` — enables sensitive device access via paired nodes (High)
+  - dangerous set: `camera.snap`, `camera.clip`, `screen.record`, `contacts.add`, `calendar.add`, `reminders.add`, `sms.send`, `sms.search`
+  - respects `gateway.nodes.denyCommands` — explicitly denied commands are not flagged
+- `Tool profile escalation`
+  - flags per-agent `tools.profile` overriding global `minimal` profile — grants access to additional tools beyond intended baseline (Medium)
+- `OWASP ASI Top 10 mapping`
+  - findings carry an optional `owasp_asi` field mapping to the OWASP Agentic Security Initiative Top 10 categories (ASI02–ASI10)
+  - rendered in `--json` output for compliance and reporting workflows
 - `Advisory matching`
   - matches local OpenClaw version evidence against the bundled advisory feed when version evidence is available
 - `Baseline approval`

@@ -117,6 +117,15 @@ ClawGuard 故意把 detector catalog 控制得很小，只保留高信号项。
 - `ACP 插件姿态`
   - 标记 `plugins.entries.acpx.config.permissionMode=approve-all` — 自动批准所有工具调用，包括 exec、spawn、shell 和文件写入（High）
   - 跳过已禁用的插件，避免残留配置产生误报
+- `Gateway 节点命令策略`
+  - 标记 `gateway.nodes.allowCommands` 中的危险命令 — 允许通过配对节点进行敏感设备访问（High）
+  - 危险集合：`camera.snap`、`camera.clip`、`screen.record`、`contacts.add`、`calendar.add`、`reminders.add`、`sms.send`、`sms.search`
+  - 尊重 `gateway.nodes.denyCommands` — 被显式拒绝的命令不会被标记
+- `工具配置文件升级`
+  - 标记 per-agent `tools.profile` 覆盖全局 `minimal` 配置文件 — 授予超出预期基线的额外工具访问权限（Medium）
+- `OWASP ASI Top 10 映射`
+  - 每个 finding 携带可选 `owasp_asi` 字段，映射到 OWASP Agentic Security Initiative Top 10 分类（ASI02–ASI10）
+  - 在 `--json` 输出中渲染，支持合规和报告工作流
 - `Advisory matching`
   - 当能读到版本证据时，将本地版本与 advisory feed 做离线匹配
 - `Baseline approval`
