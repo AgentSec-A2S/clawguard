@@ -93,6 +93,15 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - flags `dangerouslyDisableDeviceAuth=true` (Critical)
   - flags plugins installed from insecure paths like `/tmp` (Medium)
   - flags local filesystem path plugin installs for awareness (Info)
+- `Hook and webhook security`
+  - flags `hooks.allowRequestSessionKey=true` — external session hijacking risk (High)
+  - flags `hooks.mappings[].allowUnsafeExternalContent=true` — webhook prompt injection (High)
+  - flags `hooks.gmail.allowUnsafeExternalContent=true` — email prompt injection (High)
+  - flags `hooks.mappings[].transform.module` pointing outside workspace boundary (Medium)
+- `Exec and sandbox posture`
+  - flags `tools.exec.host=node` — unsandboxed host execution (Medium)
+  - flags `agents.defaults.sandbox.mode=off` or per-agent sandbox disabled (Medium)
+  - flags `channels.*.accounts.*.dmPolicy=open` at nested account level (Medium)
 - `Advisory matching`
   - matches local OpenClaw version evidence against the bundled advisory feed when version evidence is available
 - `Baseline approval`

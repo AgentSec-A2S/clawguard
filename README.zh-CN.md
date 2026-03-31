@@ -105,6 +105,15 @@ ClawGuard 故意把 detector catalog 控制得很小，只保留高信号项。
   - 标记 `dangerouslyDisableDeviceAuth=true`（Critical）
   - 标记从 `/tmp` 等不安全路径安装的 plugin（Medium）
   - 标记本地文件系统路径安装的 plugin（Info）
+- `Hook 和 Webhook 安全`
+  - 标记 `hooks.allowRequestSessionKey=true` — 外部 session 劫持风险（High）
+  - 标记 `hooks.mappings[].allowUnsafeExternalContent=true` — webhook 提示注入（High）
+  - 标记 `hooks.gmail.allowUnsafeExternalContent=true` — 邮件提示注入（High）
+  - 标记 `hooks.mappings[].transform.module` 指向工作区外路径（Medium）
+- `执行和沙箱姿态`
+  - 标记 `tools.exec.host=node` — 无沙箱宿主机执行（Medium）
+  - 标记 `agents.defaults.sandbox.mode=off` 或单 agent 沙箱关闭（Medium）
+  - 标记 `channels.*.accounts.*.dmPolicy=open` 嵌套账号级别（Medium）
 - `Advisory matching`
   - 当能读到版本证据时，将本地版本与 advisory feed 做离线匹配
 - `Baseline approval`
