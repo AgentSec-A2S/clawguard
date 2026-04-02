@@ -1,5 +1,7 @@
 # ClawGuard
 
+**Current version: v1.0.0-beta.2**
+
 > [Why ClawGuard Exists](#why-clawguard-exists) | [Current Features](#current-features) | [What It Checks](#what-it-checks-today) | [How It Works](#how-it-works) | [Requirements](#requirements) | [Install](#install) | [Usage](#first-run-and-usage) | [Notifications](#notifications) | [Output Model](#output-model) | [Scope & Limits](#current-v0-scope-and-limits) | [Development](#development)
 
 ClawGuard is a host-side integrity guardian for OpenClaw.
