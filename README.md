@@ -126,12 +126,31 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
 - `OWASP ASI Top 10 mapping`
   - findings carry an optional `owasp_asi` field mapping to the OWASP Agentic Security Initiative Top 10 categories (ASI02–ASI10)
   - rendered in `--json` output for compliance and reporting workflows
+- `Hook handler scanning` (Sprint 3)
+  - scans managed hooks (`~/.openclaw/hooks/`) and `hooks.internal.load.extraDirs` directories
+  - detects shell execution (`exec(`, `spawn(`, `child_process`) in handler files (High)
+  - detects network exfiltration (`fetch(`, `http.request`) in handler files (High)
+  - detects identity file mutation (writes to SOUL.md, MEMORY.md, AGENTS.md) (Medium)
+  - detects config mutation (writes to openclaw.json, exec-approvals.json) (High)
+- `Bootstrap file integrity` (Sprint 3)
+  - scans workspace bootstrap files (SOUL.md, AGENTS.md, TOOLS.md, IDENTITY.md, USER.md, etc.)
+  - detects encoded payloads (base64 > 100 chars) (High)
+  - detects shell injection (`$(...)`, backtick commands) (High)
+  - detects prompt injection markers ("ignore previous instructions", "system override") (Critical)
+  - detects obfuscated content (hex/unicode escapes > 40 chars) (Medium)
 - `Advisory matching`
   - matches local OpenClaw version evidence against the bundled advisory feed when version evidence is available
 - `Baseline approval`
   - turns the current observed file-hash evidence into the approved baseline set used for drift detection
+- `Audit log`
+  - passive ingestion of OpenClaw's `config-audit.jsonl` (config write events with real ISO-8601 timestamps)
+  - skill directory change detection using file-level SHA-256 hashes (catches in-place edits)
+  - plugin catalog change detection (install/remove events)
+  - log rotation safe: detects file shrink and resets cursor automatically
+  - `clawguard audit [--category X] [--since 1h] [--limit N] [--json]`
 - `Watch loop`
   - watches protected files and skill roots, re-scans on change, records snapshots, appends drift alerts, and delivers notifications from persisted alert state
+  - runs passive audit ingestion after each scan cycle for continuous event capture
 
 ## How It Works
 
@@ -245,7 +264,14 @@ cargo build --release
 - `clawguard watch`
   - starts the foreground watcher loop for the saved config
   - delivers immediate notifications for newly persisted alerts and evaluates the daily digest during the watch loop
+  - runs passive audit ingestion after each scan cycle
   - `--iterations 1` is useful for smoke-testing the cold-boot path without leaving a long-running process behind
+- `clawguard audit`
+  - shows recent audit events (config changes, skill/plugin installs, removals)
+  - `--category config|hook|plugin|tool|skill` filters by event category
+  - `--since 1h|24h|7d` filters by time range
+  - `--limit N` limits output (default 50)
+  - `--json` emits machine-readable JSONL output
 - `clawguard --json` or `clawguard scan --json`
   - emits machine-readable findings JSON derived from the shared scan result model
 - `clawguard --no-interactive` or `clawguard scan --no-interactive`

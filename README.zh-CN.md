@@ -138,12 +138,31 @@ ClawGuard 故意把 detector catalog 控制得很小，只保留高信号项。
 - `OWASP ASI Top 10 映射`
   - 每个 finding 携带可选 `owasp_asi` 字段，映射到 OWASP Agentic Security Initiative Top 10 分类（ASI02–ASI10）
   - 在 `--json` 输出中渲染，支持合规和报告工作流
+- `Hook 处理程序扫描`（Sprint 3）
+  - 扫描托管 hooks（`~/.openclaw/hooks/`）和 `hooks.internal.load.extraDirs` 目录
+  - 检测 handler 文件中的 shell 执行（`exec(`、`spawn(`、`child_process`）（High）
+  - 检测 handler 文件中的网络外泄（`fetch(`、`http.request`）（High）
+  - 检测身份文件篡改（写入 SOUL.md、MEMORY.md、AGENTS.md）（Medium）
+  - 检测配置篡改（写入 openclaw.json、exec-approvals.json）（High）
+- `Bootstrap 文件完整性`（Sprint 3）
+  - 扫描工作区 bootstrap 文件（SOUL.md、AGENTS.md、TOOLS.md、IDENTITY.md、USER.md 等）
+  - 检测编码载荷（base64 > 100 字符）（High）
+  - 检测 shell 注入（`$(...)`、反引号命令）（High）
+  - 检测提示注入标记（"ignore previous instructions"、"system override"）（Critical）
+  - 检测混淆内容（hex/unicode 转义 > 40 字符）（Medium）
 - `Advisory matching`
   - 当能读到版本证据时，将本地版本与 advisory feed 做离线匹配
 - `Baseline approval`
   - 将当前文件哈希证据记录为批准基线，用于漂移检测
+- `审计日志`
+  - 被动采集 OpenClaw 的 `config-audit.jsonl`（配置写入事件，解析真实 ISO-8601 时间戳）
+  - 基于文件级 SHA-256 哈希检测 skill 目录变更（捕获原地编辑）
+  - 检测插件目录变更（安装/卸载事件）
+  - 日志轮转安全：检测文件缩小并自动重置游标
+  - `clawguard audit [--category X] [--since 1h] [--limit N] [--json]`
 - `Watch loop`
   - 监听关键文件和 skill 目录，变更时重新扫描、记录快照、追加漂移告警、推送通知
+  - 每次扫描周期后运行被动审计采集，持续捕获事件
 
 ## 工作方式
 
@@ -255,7 +274,14 @@ cargo build --release
   - 关闭所有通知（仅日志输出）并停止 SSE 服务器
 - `clawguard watch`
   - 启动前台 watch 循环，监听文件变化，推送通知
+  - 每次扫描周期后运行被动审计采集
   - `--iterations 1` 可用于冷启动路径的 smoke test，不会留下长驻进程
+- `clawguard audit`
+  - 查看近期审计事件（配置变更、skill/plugin 安装/卸载）
+  - `--category config|hook|plugin|tool|skill` 按类别筛选
+  - `--since 1h|24h|7d` 按时间范围筛选
+  - `--limit N` 限制输出条数（默认 50）
+  - `--json` 输出机器可读的 JSONL 格式
 - `clawguard --json` 或 `clawguard scan --json`
   - 输出机器可读的 findings JSON
 - `clawguard --no-interactive` 或 `clawguard scan --no-interactive`
