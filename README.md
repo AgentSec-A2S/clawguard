@@ -153,8 +153,13 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - passive ingestion of OpenClaw's `config-audit.jsonl` (config write events with real ISO-8601 timestamps)
   - skill directory change detection using file-level SHA-256 hashes (catches in-place edits)
   - plugin catalog change detection (install/remove events)
+  - bootstrap file change tracking across agent workspaces (SHA-256 snapshot diffing for SOUL.md, MEMORY.md, AGENTS.md, etc.)
   - log rotation safe: detects file shrink and resets cursor automatically
   - `clawguard audit [--category X] [--since 1h] [--limit N] [--json]`
+- `Security statistics`
+  - aggregates scan history, finding trends, alert resolution rates, baseline counts, and audit event breakdowns
+  - supports `--since` timeframe filter (1h, 7d, 30d) and `--json` machine-readable output
+  - `clawguard stats [--since 7d] [--json]`
 - `Watch loop`
   - watches protected files and skill roots, re-scans on change, records snapshots, appends drift alerts, and delivers notifications from persisted alert state
   - runs passive audit ingestion after each scan cycle for continuous event capture
@@ -285,6 +290,10 @@ cargo build --release
   - `--since 1h|24h|7d` filters by time range
   - `--limit N` limits output (default 50)
   - `--json` emits machine-readable JSONL output
+- `clawguard stats`
+  - shows aggregate scan and security statistics over time
+  - `--since 1h|7d|30d` filters statistics to a time window
+  - `--json` emits machine-readable JSON with trend data
 - `clawguard --json` or `clawguard scan --json`
   - emits machine-readable findings JSON derived from the shared scan result model
 - `clawguard --no-interactive` or `clawguard scan --no-interactive`

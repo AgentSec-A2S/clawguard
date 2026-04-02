@@ -165,8 +165,13 @@ ClawGuard 故意把 detector catalog 控制得很小，只保留高信号项。
   - 被动采集 OpenClaw 的 `config-audit.jsonl`（配置写入事件，解析真实 ISO-8601 时间戳）
   - 基于文件级 SHA-256 哈希检测 skill 目录变更（捕获原地编辑）
   - 检测插件目录变更（安装/卸载事件）
+  - 跨 agent 工作区的 bootstrap 文件变更追踪（SOUL.md、MEMORY.md、AGENTS.md 等的 SHA-256 快照对比）
   - 日志轮转安全：检测文件缩小并自动重置游标
   - `clawguard audit [--category X] [--since 1h] [--limit N] [--json]`
+- `安全统计`
+  - 聚合扫描历史、finding 趋势、告警处理率、基线数量和审计事件分类统计
+  - 支持 `--since` 时间窗口过滤（1h、7d、30d）和 `--json` 机器可读输出
+  - `clawguard stats [--since 7d] [--json]`
 - `Watch loop`
   - 监听关键文件和 skill 目录，变更时重新扫描、记录快照、追加漂移告警、推送通知
   - 每次扫描周期后运行被动审计采集，持续捕获事件
@@ -296,6 +301,10 @@ cargo build --release
   - `--since 1h|24h|7d` 按时间范围筛选
   - `--limit N` 限制输出条数（默认 50）
   - `--json` 输出机器可读的 JSONL 格式
+- `clawguard stats`
+  - 显示聚合扫描与安全统计数据
+  - `--since 1h|7d|30d` 按时间窗口过滤统计数据
+  - `--json` 输出包含趋势数据的机器可读 JSON
 - `clawguard --json` 或 `clawguard scan --json`
   - 输出机器可读的 findings JSON
 - `clawguard --no-interactive` 或 `clawguard scan --no-interactive`
