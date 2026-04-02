@@ -71,7 +71,7 @@ ClawGuard exists to give you an action-oriented answer:
 - OpenClaw gateway plugin (`openclaw-plugin/`) for Telegram/Discord/Slack alerts:
   - Connects to ClawGuard SSE stream with automatic reconnection
   - Forwards alert and daily digest events to any configured OpenClaw channel
-  - Slash commands: `/clawguard_feed`, `/clawguard_status`, `/clawguard_alerts`
+  - Slash commands: `/clawguard_help`, `/clawguard_feed`, `/clawguard_status`, `/clawguard_alerts`
 - Conservative scope: no broad auto-remediation, no background trust UI, no hidden mutation of OpenClaw state
 
 ## What It Checks Today
@@ -399,6 +399,7 @@ Slash commands available in your messaging channel:
 
 | Command | Description | Status |
 |---------|-------------|--------|
+| `/clawguard_help` | Show all commands and usage guide | V1 |
 | `/clawguard_feed` | Toggle alert feed on/off | V1 |
 | `/clawguard_status` | Show current security status | V1 |
 | `/clawguard_alerts` | Show 10 most recent alerts | V1 |
