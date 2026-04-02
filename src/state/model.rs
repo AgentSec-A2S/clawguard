@@ -79,3 +79,19 @@ pub struct NotificationCursorRecord {
     pub cursor_key: String,
     pub unix_ms: u64,
 }
+
+// ---- Stats aggregation types ----
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanStats {
+    pub total: u64,
+    pub first_at_unix_ms: Option<u64>,
+    pub last_at_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlertStats {
+    pub open: u64,
+    pub acknowledged: u64,
+    pub resolved: u64,
+}

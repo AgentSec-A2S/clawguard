@@ -31,6 +31,10 @@ pub fn run_passive_ingestion(
     total +=
         ingest_plugin_catalog(state, &catalog_path).map_err(|e| format!("plugin-catalog: {e}"))?;
 
+    let agents_dir = openclaw_home.join("agents");
+    total += ingest_bootstrap_changes(state, &agents_dir)
+        .map_err(|e| format!("bootstrap-changes: {e}"))?;
+
     Ok(total)
 }
 
@@ -322,6 +326,161 @@ pub fn ingest_plugin_catalog(state: &mut StateStore, catalog_path: &Path) -> Res
         .map_err(|e| format!("snapshot insert: {e}"))?;
 
     Ok(count)
+}
+
+/// Detect bootstrap file additions, removals, and modifications across agent workspaces.
+/// Uses the same snapshot diffing pattern as `ingest_skill_changes()`.
+pub fn ingest_bootstrap_changes(
+    state: &mut StateStore,
+    agents_dir: &Path,
+) -> Result<usize, String> {
+    let current_snapshot = match hash_bootstrap_files(agents_dir) {
+        Some(snapshot) => snapshot,
+        None => return Ok(0), // directory unreadable — preserve previous state
+    };
+
+    let previous_snapshot: HashMap<String, String> =
+        read_latest_snapshot_payload(state, "bootstrap.snapshot")
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
+
+    let now = now_ms();
+    let mut events = Vec::new();
+
+    for (rel_path, hash) in &current_snapshot {
+        match previous_snapshot.get(rel_path) {
+            None => {
+                events.push(
+                    AuditEvent::new_passive(
+                        now,
+                        AuditCategory::Config,
+                        "bootstrap.added",
+                        format!("Bootstrap file added: {rel_path}"),
+                        serde_json::json!({"path": rel_path, "sha256": hash}).to_string(),
+                    )
+                    .with_path(agents_dir.join(rel_path).to_string_lossy().to_string()),
+                );
+            }
+            Some(prev_hash) if prev_hash != hash => {
+                events.push(
+                    AuditEvent::new_passive(
+                        now,
+                        AuditCategory::Config,
+                        "bootstrap.changed",
+                        format!("Bootstrap file changed: {rel_path}"),
+                        serde_json::json!({
+                            "path": rel_path,
+                            "prev_hash": prev_hash,
+                            "new_hash": hash,
+                        })
+                        .to_string(),
+                    )
+                    .with_path(agents_dir.join(rel_path).to_string_lossy().to_string()),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    for rel_path in previous_snapshot.keys() {
+        if !current_snapshot.contains_key(rel_path) {
+            events.push(AuditEvent::new_passive(
+                now,
+                AuditCategory::Config,
+                "bootstrap.removed",
+                format!("Bootstrap file removed: {rel_path}"),
+                serde_json::json!({"path": rel_path}).to_string(),
+            ));
+        }
+    }
+
+    let count = events.len();
+    if !events.is_empty() {
+        state
+            .insert_audit_events(&events)
+            .map_err(|e| format!("insert: {e}"))?;
+    }
+
+    // Count workspaces for summary
+    let workspace_count = current_snapshot
+        .keys()
+        .filter_map(|p| p.split('/').next())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    let snapshot_json =
+        serde_json::to_string(&current_snapshot).unwrap_or_else(|_| "{}".to_string());
+    state
+        .insert_audit_events(&[AuditEvent {
+            id: 0,
+            recorded_at_unix_ms: now,
+            event_at_unix_ms: now,
+            category: AuditCategory::Config,
+            event_type: "bootstrap.snapshot".to_string(),
+            source: AuditSource::Passive,
+            summary: format!(
+                "Bootstrap snapshot: {} files across {} workspaces",
+                current_snapshot.len(),
+                workspace_count
+            ),
+            payload_json: snapshot_json,
+            session_key: None,
+            agent_id: None,
+            path: None,
+        }])
+        .map_err(|e| format!("snapshot insert: {e}"))?;
+
+    Ok(count)
+}
+
+/// Maximum file size for bootstrap hashing (same bound as scan_workspace).
+const BOOTSTRAP_MAX_HASH_BYTES: u64 = 1_048_576; // 1 MiB
+
+/// Hash all bootstrap files across agent workspace directories.
+/// Returns None if the agents directory is unreadable.
+/// Skips symlinks and oversized files to prevent oracle attacks and OOM.
+fn hash_bootstrap_files(agents_dir: &Path) -> Option<HashMap<String, String>> {
+    use crate::scan::bootstrap::{discover_workspace_dirs, BOOTSTRAP_FILES};
+
+    if !agents_dir.exists() || !agents_dir.is_dir() {
+        return None;
+    }
+
+    let workspaces = discover_workspace_dirs(agents_dir);
+    let mut snapshot = HashMap::new();
+
+    for workspace in &workspaces {
+        for file_name in BOOTSTRAP_FILES {
+            let file_path = workspace.join(file_name);
+
+            // Skip symlinks to prevent oracle attacks (hash known-file contents)
+            let Ok(meta) = fs::symlink_metadata(&file_path) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() || !meta.is_file() {
+                continue;
+            }
+            // Skip oversized files to prevent OOM
+            if meta.len() > BOOTSTRAP_MAX_HASH_BYTES {
+                continue;
+            }
+
+            let Ok(contents) = fs::read(&file_path) else {
+                continue;
+            };
+            let mut hasher = Sha256::new();
+            hasher.update(&contents);
+            let hash = format!("sha256:{:x}", hasher.finalize());
+
+            // Relative path from agents_dir for readability
+            let rel = file_path
+                .strip_prefix(agents_dir)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| file_path.to_string_lossy().to_string());
+            snapshot.insert(rel, hash);
+        }
+    }
+
+    Some(snapshot)
 }
 
 // ---- Helpers ----

@@ -2,7 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use clawguard::audit::ingest::{
-    ingest_config_audit_jsonl, ingest_plugin_catalog, ingest_skill_changes,
+    ingest_bootstrap_changes, ingest_config_audit_jsonl, ingest_plugin_catalog,
+    ingest_skill_changes,
 };
 use clawguard::audit::{AuditCategory, AuditEvent};
 use clawguard::state::db::{StateStore, StateStoreConfig};
@@ -388,4 +389,89 @@ fn skill_unreadable_dir_preserves_previous_snapshot() {
         .filter(|e| e.event_type == "skill.removed")
         .collect();
     assert!(events.is_empty(), "should not emit false removals");
+}
+
+// ---- Bootstrap file audit tracking tests ----
+
+#[test]
+fn bootstrap_file_added_detected() {
+    let (dir, mut state) = setup_state();
+    let agents_dir = dir.path().join("agents");
+    let workspace = agents_dir.join("default").join("agent");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(workspace.join("SOUL.md"), "You are a helpful assistant.").unwrap();
+
+    let count = ingest_bootstrap_changes(&mut state, &agents_dir).unwrap();
+    assert_eq!(count, 1);
+
+    let events: Vec<_> = list_all_events(&state)
+        .into_iter()
+        .filter(|e| e.event_type == "bootstrap.added")
+        .collect();
+    assert_eq!(events.len(), 1);
+    assert!(events[0].summary.contains("SOUL.md"));
+}
+
+#[test]
+fn bootstrap_file_changed_detected() {
+    let (dir, mut state) = setup_state();
+    let agents_dir = dir.path().join("agents");
+    let workspace = agents_dir.join("default").join("agent");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(workspace.join("SOUL.md"), "Version 1").unwrap();
+
+    // First ingestion — file added
+    let count1 = ingest_bootstrap_changes(&mut state, &agents_dir).unwrap();
+    assert_eq!(count1, 1);
+
+    // Modify the file
+    fs::write(workspace.join("SOUL.md"), "Version 2 — updated content").unwrap();
+
+    // Second ingestion — file changed
+    let count2 = ingest_bootstrap_changes(&mut state, &agents_dir).unwrap();
+    assert_eq!(count2, 1);
+
+    let events: Vec<_> = list_all_events(&state)
+        .into_iter()
+        .filter(|e| e.event_type == "bootstrap.changed")
+        .collect();
+    assert_eq!(events.len(), 1);
+    assert!(events[0].summary.contains("SOUL.md"));
+    assert!(events[0].payload_json.contains("prev_hash"));
+    assert!(events[0].payload_json.contains("new_hash"));
+}
+
+#[test]
+fn bootstrap_file_removed_detected() {
+    let (dir, mut state) = setup_state();
+    let agents_dir = dir.path().join("agents");
+    let workspace = agents_dir.join("default").join("agent");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(workspace.join("AGENTS.md"), "Agent config here").unwrap();
+
+    // First ingestion — file added
+    ingest_bootstrap_changes(&mut state, &agents_dir).unwrap();
+
+    // Remove the file
+    fs::remove_file(workspace.join("AGENTS.md")).unwrap();
+
+    // Second ingestion — file removed
+    let count = ingest_bootstrap_changes(&mut state, &agents_dir).unwrap();
+    assert_eq!(count, 1);
+
+    let events: Vec<_> = list_all_events(&state)
+        .into_iter()
+        .filter(|e| e.event_type == "bootstrap.removed")
+        .collect();
+    assert_eq!(events.len(), 1);
+    assert!(events[0].summary.contains("AGENTS.md"));
+}
+
+#[test]
+fn bootstrap_no_agents_dir_clean() {
+    let (_dir, mut state) = setup_state();
+    let missing = PathBuf::from("/nonexistent/agents");
+
+    let count = ingest_bootstrap_changes(&mut state, &missing).unwrap();
+    assert_eq!(count, 0, "missing agents dir should return 0 events");
 }

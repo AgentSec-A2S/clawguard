@@ -88,6 +88,8 @@ enum Commands {
     Watch(WatchArgs),
     /// Show the local audit event log.
     Audit(AuditArgs),
+    /// Show scan and security statistics.
+    Stats(StatsArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -136,6 +138,13 @@ struct AuditArgs {
     /// Maximum number of events to show.
     #[arg(long, default_value_t = 50)]
     limit: u32,
+}
+
+#[derive(Debug, Args)]
+struct StatsArgs {
+    /// Show statistics since: 1h, 24h, 7d, 30d, or a Unix timestamp in milliseconds.
+    #[arg(long)]
+    since: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -309,6 +318,7 @@ pub fn run() -> ExitCode {
         }) => run_notify_update_command(&cli, cmd),
         Some(Commands::Watch(ref args)) => run_watch_command(&cli, args),
         Some(Commands::Audit(ref args)) => run_audit_command(&cli, args),
+        Some(Commands::Stats(ref args)) => run_stats_command(&cli, args),
         None => run_root_command(&cli),
     }
 }
@@ -1003,6 +1013,231 @@ fn run_audit_command(cli: &Cli, args: &AuditArgs) -> ExitCode {
         println!("No audit events found.");
     } else {
         render_audit_table(&events);
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn run_stats_command(cli: &Cli, args: &StatsArgs) -> ExitCode {
+    let home_dir = resolve_home_dir();
+    let db_path = state_db_path_for_home(&home_dir);
+
+    if !db_path.exists() {
+        if cli.json {
+            println!("{{}}");
+        } else {
+            println!("No scan data yet. Run `clawguard scan` to start.");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let open_result = match open_state_store_for_home(&home_dir) {
+        Ok(result) => result,
+        Err(exit_code) => return exit_code,
+    };
+    let store = &open_result.store;
+
+    let since_unix_ms = args.since.as_deref().and_then(parse_since_duration);
+
+    let scan_stats = match store.count_scan_snapshots(since_unix_ms) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: failed to query scan stats: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if scan_stats.total == 0 {
+        if cli.json {
+            println!("{{}}");
+        } else {
+            println!("No scan data yet. Run `clawguard scan` to start.");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let alert_stats =
+        store
+            .count_alerts_by_status(since_unix_ms)
+            .unwrap_or(crate::state::model::AlertStats {
+                open: 0,
+                acknowledged: 0,
+                resolved: 0,
+            });
+    let baseline_count = store.count_baselines(since_unix_ms).unwrap_or(0);
+    let audit_by_cat = store
+        .count_audit_events_by_category(since_unix_ms)
+        .unwrap_or_default();
+    let current_findings = store.list_current_findings().unwrap_or_default();
+
+    // Trend: earliest snapshot in window vs latest snapshot overall.
+    // Both use snapshot summary totals for consistency (not current_findings which
+    // reflects post-scan mutations and isn't time-filtered).
+    // Note: latest_scan_snapshot() is globally unfiltered intentionally — if scan_stats.total > 0
+    // (checked above), the global latest is always >= any snapshot in the window.
+    let earliest = store.earliest_scan_snapshot(since_unix_ms).ok().flatten();
+    let latest = store.latest_scan_snapshot().ok().flatten();
+    let findings_start = earliest
+        .as_ref()
+        .map(|s| s.summary.total_findings)
+        .unwrap_or(0);
+    let findings_current = latest
+        .as_ref()
+        .map(|s| s.summary.total_findings)
+        .unwrap_or(current_findings.len());
+
+    // Per-severity breakdown from current findings
+    let mut by_severity: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for f in &current_findings {
+        *by_severity.entry(format!("{:?}", f.severity)).or_insert(0) += 1;
+    }
+
+    let alert_total = alert_stats.open + alert_stats.acknowledged + alert_stats.resolved;
+    let audit_total: u64 = audit_by_cat.values().sum();
+
+    if cli.json {
+        let trend_direction = if findings_current < findings_start {
+            "improved"
+        } else if findings_current > findings_start {
+            "degraded"
+        } else {
+            "stable"
+        };
+
+        let json = serde_json::json!({
+            "since_unix_ms": since_unix_ms,
+            "scans": {
+                "total": scan_stats.total,
+                "first_at_unix_ms": scan_stats.first_at_unix_ms,
+                "last_at_unix_ms": scan_stats.last_at_unix_ms,
+            },
+            "findings": {
+                "current": {
+                    "total": findings_current,
+                    "critical": by_severity.get("Critical").unwrap_or(&0),
+                    "high": by_severity.get("High").unwrap_or(&0),
+                    "medium": by_severity.get("Medium").unwrap_or(&0),
+                    "low": by_severity.get("Low").unwrap_or(&0),
+                    "info": by_severity.get("Info").unwrap_or(&0),
+                },
+            },
+            "alerts": {
+                "total": alert_total,
+                "open": alert_stats.open,
+                "acknowledged": alert_stats.acknowledged,
+                "resolved": alert_stats.resolved,
+            },
+            "baselines": {
+                "approved_paths": baseline_count,
+            },
+            "audit_events": {
+                "total": audit_total,
+                "by_category": audit_by_cat,
+            },
+            "trend": {
+                "findings_start": findings_start,
+                "findings_current": findings_current,
+                "findings_direction": trend_direction,
+            },
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json).unwrap_or_default()
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    // Terminal output
+    let since_label = if let Some(s) = &args.since {
+        format!(" (since {s})")
+    } else {
+        String::new()
+    };
+    println!("ClawGuard Security Statistics{since_label}");
+    println!("{}", "─".repeat(45));
+
+    // Scans
+    let last_ago = scan_stats
+        .last_at_unix_ms
+        .map_or("unknown".to_string(), |ts| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let diff_secs = now.saturating_sub(ts) / 1000;
+            if diff_secs < 60 {
+                format!("{diff_secs} seconds ago")
+            } else if diff_secs < 3600 {
+                format!("{} minutes ago", diff_secs / 60)
+            } else if diff_secs < 86400 {
+                format!("{} hours ago", diff_secs / 3600)
+            } else {
+                format!("{} days ago", diff_secs / 86400)
+            }
+        });
+    println!(
+        "Scans:          {} total (last: {})",
+        scan_stats.total, last_ago
+    );
+
+    // Findings
+    let severity_parts: Vec<String> = ["Critical", "High", "Medium", "Low", "Info"]
+        .iter()
+        .filter_map(|sev| {
+            let count = by_severity.get(*sev).unwrap_or(&0);
+            if *count > 0 {
+                Some(format!("{count} {sev}"))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let severity_detail = if severity_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", severity_parts.join(", "))
+    };
+    println!(
+        "Findings:       {} current{}",
+        findings_current, severity_detail
+    );
+
+    // Alerts
+    println!(
+        "Alerts:         {} total ({} open, {} acknowledged, {} resolved)",
+        alert_total, alert_stats.open, alert_stats.acknowledged, alert_stats.resolved
+    );
+
+    // Baselines
+    println!("Baselines:      {} approved paths", baseline_count);
+
+    // Audit events
+    let cat_parts: Vec<String> = audit_by_cat
+        .iter()
+        .map(|(cat, count)| format!("{count} {cat}"))
+        .collect();
+    let cat_detail = if cat_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", cat_parts.join(", "))
+    };
+    println!("Audit events:   {} total{}", audit_total, cat_detail);
+
+    // Trend
+    if findings_start > 0 || findings_current > 0 {
+        println!();
+        println!("Trend:");
+        let direction = if findings_current < findings_start {
+            "↓ improved"
+        } else if findings_current > findings_start {
+            "↑ degraded"
+        } else {
+            "→ stable"
+        };
+        println!(
+            "  Findings:  {} → {} ({})",
+            findings_start, findings_current, direction
+        );
     }
 
     ExitCode::SUCCESS

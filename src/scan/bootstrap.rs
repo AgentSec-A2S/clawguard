@@ -7,7 +7,7 @@ use super::finding::owasp_asi_for_kind;
 use super::{Finding, FindingCategory, Fixability, RecommendedAction, RuntimeConfidence, Severity};
 
 /// Bootstrap files injected into every agent session by OpenClaw.
-const BOOTSTRAP_FILES: &[&str] = &[
+pub(crate) const BOOTSTRAP_FILES: &[&str] = &[
     "AGENTS.md",
     "SOUL.md",
     "TOOLS.md",
@@ -48,7 +48,7 @@ pub fn scan_bootstrap_dirs(dirs: &[PathBuf], max_file_size_bytes: u64) -> Bootst
     output
 }
 
-fn discover_workspace_dirs(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn discover_workspace_dirs(dir: &Path) -> Vec<PathBuf> {
     let mut workspaces = Vec::new();
 
     // Always enumerate agent subdirs: dir/*/agent/

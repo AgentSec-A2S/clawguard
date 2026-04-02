@@ -9,8 +9,9 @@ use rusqlite::{Connection, Error as SqlError, ErrorCode, OptionalExtension, Para
 use crate::scan::Finding;
 
 use super::model::{
-    AlertRecord, AlertStatus, BaselineRecord, NotificationCursorRecord, NotificationReceiptRecord,
-    RestorePayloadRecord, ScanSnapshot, StateWarning, StateWarningKind,
+    AlertRecord, AlertStats, AlertStatus, BaselineRecord, NotificationCursorRecord,
+    NotificationReceiptRecord, RestorePayloadRecord, ScanSnapshot, ScanStats, StateWarning,
+    StateWarningKind,
 };
 
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -852,6 +853,145 @@ impl StateStore {
         Ok(alerts)
     }
 
+    // ---- Stats aggregation queries ----
+
+    pub fn count_scan_snapshots(
+        &self,
+        since_unix_ms: Option<u64>,
+    ) -> Result<ScanStats, StateStoreError> {
+        let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match since_unix_ms {
+            Some(since) => (
+                "SELECT COUNT(*), MIN(recorded_at_unix_ms), MAX(recorded_at_unix_ms) FROM scan_snapshots WHERE recorded_at_unix_ms >= ?1",
+                vec![Box::new(since as i64)],
+            ),
+            None => (
+                "SELECT COUNT(*), MIN(recorded_at_unix_ms), MAX(recorded_at_unix_ms) FROM scan_snapshots",
+                vec![],
+            ),
+        };
+        let mut statement = self.conn.prepare(sql)?;
+        let row = statement.query_row(rusqlite::params_from_iter(params.iter()), |row| {
+            let total = row.get::<_, i64>(0)? as u64;
+            let first: Option<i64> = row.get(1)?;
+            let last: Option<i64> = row.get(2)?;
+            Ok(ScanStats {
+                total,
+                first_at_unix_ms: first.map(|v| v as u64),
+                last_at_unix_ms: last.map(|v| v as u64),
+            })
+        })?;
+        Ok(row)
+    }
+
+    pub fn earliest_scan_snapshot(
+        &self,
+        since_unix_ms: Option<u64>,
+    ) -> Result<Option<ScanSnapshot>, StateStoreError> {
+        let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match since_unix_ms {
+            Some(since) => (
+                "SELECT snapshot_json FROM scan_snapshots WHERE recorded_at_unix_ms >= ?1 ORDER BY recorded_at_unix_ms ASC, id ASC LIMIT 1",
+                vec![Box::new(since as i64)],
+            ),
+            None => (
+                "SELECT snapshot_json FROM scan_snapshots ORDER BY recorded_at_unix_ms ASC, id ASC LIMIT 1",
+                vec![],
+            ),
+        };
+        let mut statement = self.conn.prepare(sql)?;
+        let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let json: String = row.get(0)?;
+        let snapshot: ScanSnapshot =
+            serde_json::from_str(&json).map_err(|e| StateStoreError::Serialize {
+                message: format!("failed to parse snapshot: {e}"),
+            })?;
+        Ok(Some(snapshot))
+    }
+
+    pub fn count_alerts_by_status(
+        &self,
+        since_unix_ms: Option<u64>,
+    ) -> Result<AlertStats, StateStoreError> {
+        let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match since_unix_ms {
+            Some(since) => (
+                "SELECT status, COUNT(*) FROM alerts WHERE created_at_unix_ms >= ?1 GROUP BY status",
+                vec![Box::new(since as i64)],
+            ),
+            None => (
+                "SELECT status, COUNT(*) FROM alerts GROUP BY status",
+                vec![],
+            ),
+        };
+        let mut statement = self.conn.prepare(sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            let status: String = row.get(0)?;
+            let count = row.get::<_, i64>(1)? as u64;
+            Ok((status, count))
+        })?;
+
+        let mut stats = AlertStats {
+            open: 0,
+            acknowledged: 0,
+            resolved: 0,
+        };
+        for row in rows {
+            let (status, count) = row?;
+            match status.as_str() {
+                "open" => stats.open = count,
+                "acknowledged" => stats.acknowledged = count,
+                "resolved" => stats.resolved = count,
+                _ => {}
+            }
+        }
+        Ok(stats)
+    }
+
+    pub fn count_baselines(&self, since_unix_ms: Option<u64>) -> Result<u64, StateStoreError> {
+        let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match since_unix_ms {
+            Some(since) => (
+                "SELECT COUNT(*) FROM baselines WHERE approved_at_unix_ms >= ?1",
+                vec![Box::new(since as i64)],
+            ),
+            None => ("SELECT COUNT(*) FROM baselines", vec![]),
+        };
+        let mut statement = self.conn.prepare(sql)?;
+        let count = statement.query_row(rusqlite::params_from_iter(params.iter()), |row| {
+            row.get::<_, i64>(0)
+        })?;
+        Ok(count.max(0) as u64)
+    }
+
+    pub fn count_audit_events_by_category(
+        &self,
+        since_unix_ms: Option<u64>,
+    ) -> Result<std::collections::HashMap<String, u64>, StateStoreError> {
+        let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match since_unix_ms {
+            Some(since) => (
+                "SELECT category, COUNT(*) FROM audit_events WHERE event_at_unix_ms >= ?1 GROUP BY category",
+                vec![Box::new(since as i64)],
+            ),
+            None => (
+                "SELECT category, COUNT(*) FROM audit_events GROUP BY category",
+                vec![],
+            ),
+        };
+        let mut statement = self.conn.prepare(sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            let category: String = row.get(0)?;
+            let count = row.get::<_, i64>(1)? as u64;
+            Ok((category, count))
+        })?;
+
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (category, count) = row?;
+            map.insert(category, count);
+        }
+        Ok(map)
+    }
+
     fn run_write_with_retry<T, F>(&mut self, mut operation: F) -> Result<T, StateStoreError>
     where
         F: FnMut(&Connection) -> Result<T, StateStoreError>,
@@ -1037,6 +1177,8 @@ fn bootstrap_schema(conn: &Connection) -> Result<(), StateStoreError> {
             ON audit_events(category);
         CREATE INDEX IF NOT EXISTS idx_audit_events_event_at
             ON audit_events(event_at_unix_ms);
+        CREATE INDEX IF NOT EXISTS idx_audit_events_event_type
+            ON audit_events(event_type);
         ",
     )?;
 
