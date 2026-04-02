@@ -97,8 +97,8 @@ export default {
           "",
           "Telegram commands:",
           "  /clawguard_help     Show this help message",
-          "  /clawguard_status   Show current security posture (findings, baselines, scan time)",
-          "  /clawguard_alerts   Show the 10 most recent drift alerts",
+          "  /clawguard_status   Show ClawGuard connection status",
+          "  /clawguard_alerts   Show recent alerts (if available)",
           "  /clawguard_feed     Toggle the real-time alert feed on/off",
           "",
           "CLI commands (run on the host):",
@@ -111,7 +111,7 @@ export default {
           "  clawguard baseline approve   Approve current state as drift baseline",
           "  clawguard notify         View/change notification settings",
           "",
-          "Tip: Run `clawguard watch --sse-port 37776` to enable this Telegram integration.",
+          `Tip: Run \`clawguard watch\` with SSE enabled (port ${port}) to enable this Telegram integration.`,
         ].join("\n");
       },
     });
