@@ -87,6 +87,34 @@ export default {
         }
       },
     });
+
+    api.registerCommand({
+      id: "clawguard_help",
+      description: "Show all ClawGuard commands and usage",
+      handler: async () => {
+        return [
+          "\u{1F6E1}\uFE0F ClawGuard — Security Scanner for OpenClaw",
+          "",
+          "Telegram commands:",
+          "  /clawguard_help     Show this help message",
+          "  /clawguard_status   Show current security posture (findings, baselines, scan time)",
+          "  /clawguard_alerts   Show the 10 most recent drift alerts",
+          "  /clawguard_feed     Toggle the real-time alert feed on/off",
+          "",
+          "CLI commands (run on the host):",
+          "  clawguard               First run: setup wizard + scan; after: status view",
+          "  clawguard scan           Run a one-time security scan",
+          "  clawguard watch          Start continuous monitoring (required for Telegram alerts)",
+          "  clawguard audit          Show audit event log (config/skill/plugin changes)",
+          "  clawguard status         Show persisted security status",
+          "  clawguard alerts         Show alert history",
+          "  clawguard baseline approve   Approve current state as drift baseline",
+          "  clawguard notify         View/change notification settings",
+          "",
+          "Tip: Run `clawguard watch --sse-port 37776` to enable this Telegram integration.",
+        ].join("\n");
+      },
+    });
   },
 };
 
