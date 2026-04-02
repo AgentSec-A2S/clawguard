@@ -700,6 +700,114 @@ impl StateStore {
         }))
     }
 
+    // ---- Audit events ----
+
+    pub fn insert_audit_events(
+        &mut self,
+        events: &[crate::audit::AuditEvent],
+    ) -> Result<(), StateStoreError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        self.run_write_with_retry(|conn| {
+            let transaction = conn.unchecked_transaction()?;
+            for event in events {
+                transaction.execute(
+                    "INSERT INTO audit_events
+                        (recorded_at_unix_ms, event_at_unix_ms, category, event_type, source,
+                         summary, payload_json, session_key, agent_id, path)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    (
+                        event.recorded_at_unix_ms as i64,
+                        event.event_at_unix_ms as i64,
+                        event.category.as_str(),
+                        &event.event_type,
+                        event.source.as_str(),
+                        &event.summary,
+                        &event.payload_json,
+                        &event.session_key,
+                        &event.agent_id,
+                        &event.path,
+                    ),
+                )?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
+    pub fn list_audit_events(
+        &self,
+        category: Option<&str>,
+        since_unix_ms: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<crate::audit::AuditEvent>, StateStoreError> {
+        let mut sql = String::from(
+            "SELECT id, recorded_at_unix_ms, event_at_unix_ms, category, event_type, source,
+                    summary, payload_json, session_key, agent_id, path
+             FROM audit_events",
+        );
+        let mut conditions: Vec<String> = Vec::new();
+        if category.is_some() {
+            conditions.push("category = ?1".to_string());
+        }
+        if since_unix_ms.is_some() {
+            let param_idx = if category.is_some() { 2 } else { 1 };
+            conditions.push(format!("event_at_unix_ms >= ?{param_idx}"));
+        }
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
+        }
+        sql.push_str(" ORDER BY event_at_unix_ms DESC, id DESC");
+        let limit_param = if category.is_some() && since_unix_ms.is_some() {
+            3
+        } else if category.is_some() || since_unix_ms.is_some() {
+            2
+        } else {
+            1
+        };
+        sql.push_str(&format!(" LIMIT ?{limit_param}"));
+
+        let mut statement = self.conn.prepare(&sql)?;
+
+        let rows = match (category, since_unix_ms) {
+            (Some(cat), Some(since)) => {
+                statement.query_map((cat, since as i64, limit), audit_event_from_row)?
+            }
+            (Some(cat), None) => statement.query_map((cat, limit), audit_event_from_row)?,
+            (None, Some(since)) => {
+                statement.query_map((since as i64, limit), audit_event_from_row)?
+            }
+            (None, None) => statement.query_map([limit], audit_event_from_row)?,
+        };
+
+        let mut events = Vec::new();
+        for row in rows {
+            events.push(row?);
+        }
+        Ok(events)
+    }
+
+    pub fn latest_audit_event_by_type(
+        &self,
+        event_type: &str,
+    ) -> Result<Option<crate::audit::AuditEvent>, StateStoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, recorded_at_unix_ms, event_at_unix_ms, category, event_type, source,
+                    summary, payload_json, session_key, agent_id, path
+             FROM audit_events
+             WHERE event_type = ?1
+             ORDER BY id DESC
+             LIMIT 1",
+        )?;
+        let mut rows = statement.query([event_type])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(audit_event_from_row(row)?))
+    }
+
     pub fn list_restore_payloads(&self) -> Result<Vec<RestorePayloadRecord>, StateStoreError> {
         let mut statement = self.conn.prepare(
             "SELECT path, sha256, captured_at_unix_ms, source_label, content
@@ -911,6 +1019,24 @@ fn bootstrap_schema(conn: &Connection) -> Result<(), StateStoreError> {
             cursor_key TEXT PRIMARY KEY,
             unix_ms INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recorded_at_unix_ms INTEGER NOT NULL,
+            event_at_unix_ms INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            source TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            session_key TEXT,
+            agent_id TEXT,
+            path TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_events_category
+            ON audit_events(category);
+        CREATE INDEX IF NOT EXISTS idx_audit_events_event_at
+            ON audit_events(event_at_unix_ms);
         ",
     )?;
 
@@ -964,6 +1090,26 @@ fn status_from_str(status: &str) -> Result<AlertStatus, rusqlite::Error> {
             )),
         )),
     }
+}
+
+fn audit_event_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<crate::audit::AuditEvent, rusqlite::Error> {
+    let category_str: String = row.get(3)?;
+    let source_str: String = row.get(5)?;
+    Ok(crate::audit::AuditEvent {
+        id: row.get(0)?,
+        recorded_at_unix_ms: row.get::<_, i64>(1)? as u64,
+        event_at_unix_ms: row.get::<_, i64>(2)? as u64,
+        category: crate::audit::AuditCategory::from_str(&category_str),
+        event_type: row.get(4)?,
+        source: crate::audit::AuditSource::from_str(&source_str),
+        summary: row.get(6)?,
+        payload_json: row.get(7)?,
+        session_key: row.get(8)?,
+        agent_id: row.get(9)?,
+        path: row.get(10)?,
+    })
 }
 
 fn alert_record_from_row(row: &rusqlite::Row<'_>) -> Result<AlertRecord, rusqlite::Error> {

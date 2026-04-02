@@ -244,6 +244,18 @@ impl WatchService {
             .record_scan_snapshot_and_replace_current_findings(&snapshot)?;
         let alerts_created = self.append_new_drift_alerts(recorded_at_unix_ms, &drift_findings)?;
 
+        // Run passive audit ingestion for discovered runtimes
+        for runtime in &discovery.runtimes {
+            if let Some(root) = &runtime.root {
+                if let Err(e) = crate::audit::ingest::run_passive_ingestion(&mut self.state, root) {
+                    self.pending_warnings.push(WatchWarning {
+                        path: None,
+                        message: format!("audit ingestion: {e}"),
+                    });
+                }
+            }
+        }
+
         Ok(WatchCycleOutcome {
             snapshot,
             watch_plan,

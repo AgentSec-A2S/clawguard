@@ -86,6 +86,8 @@ enum Commands {
     },
     /// Start the foreground watcher loop for the configured runtime.
     Watch(WatchArgs),
+    /// Show the local audit event log.
+    Audit(AuditArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -119,6 +121,21 @@ struct WatchArgs {
     /// Start an SSE server on this port for real-time alert streaming. 0 = disabled.
     #[arg(long, default_value_t = 0)]
     sse_port: u16,
+}
+
+#[derive(Debug, Args)]
+struct AuditArgs {
+    /// Filter by event category: config, hook, plugin, tool, skill.
+    #[arg(long)]
+    category: Option<String>,
+
+    /// Show events since: 1h, 24h, 7d, or a Unix timestamp in milliseconds.
+    #[arg(long)]
+    since: Option<String>,
+
+    /// Maximum number of events to show.
+    #[arg(long, default_value_t = 50)]
+    limit: u32,
 }
 
 #[derive(Debug, Subcommand)]
@@ -291,6 +308,7 @@ pub fn run() -> ExitCode {
             command: Some(ref cmd),
         }) => run_notify_update_command(&cli, cmd),
         Some(Commands::Watch(ref args)) => run_watch_command(&cli, args),
+        Some(Commands::Audit(ref args)) => run_audit_command(&cli, args),
         None => run_root_command(&cli),
     }
 }
@@ -941,6 +959,154 @@ fn run_baseline_approve_command(cli: &Cli) -> ExitCode {
     };
 
     render_baseline_approve_output(cli.json, &output)
+}
+
+fn run_audit_command(cli: &Cli, args: &AuditArgs) -> ExitCode {
+    let home_dir = resolve_home_dir();
+    let db_path = state_db_path_for_home(&home_dir);
+
+    if !db_path.exists() {
+        if cli.json {
+            println!("[]");
+        } else {
+            println!("No audit events yet — run a scan or watch first.");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let open_result = match open_state_store_for_home(&home_dir) {
+        Ok(result) => result,
+        Err(exit_code) => return exit_code,
+    };
+
+    let since_unix_ms = args.since.as_deref().and_then(parse_since_duration);
+
+    let events = match open_result.store.list_audit_events(
+        args.category.as_deref(),
+        since_unix_ms,
+        args.limit,
+    ) {
+        Ok(events) => events,
+        Err(error) => {
+            eprintln!("Error: failed to query audit events: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if cli.json {
+        for event in &events {
+            if let Ok(json) = serde_json::to_string(event) {
+                println!("{json}");
+            }
+        }
+    } else if events.is_empty() {
+        println!("No audit events found.");
+    } else {
+        render_audit_table(&events);
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn parse_since_duration(s: &str) -> Option<u64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    if let Ok(ts) = s.parse::<u64>() {
+        return Some(ts);
+    }
+
+    let trimmed = s.trim().to_lowercase();
+    let ms = if trimmed.ends_with('h') {
+        trimmed.trim_end_matches('h').parse::<u64>().ok()? * 3_600_000
+    } else if trimmed.ends_with('d') {
+        trimmed.trim_end_matches('d').parse::<u64>().ok()? * 86_400_000
+    } else if trimmed.ends_with('m') {
+        trimmed.trim_end_matches('m').parse::<u64>().ok()? * 60_000
+    } else {
+        return None;
+    };
+
+    Some(now.saturating_sub(ms))
+}
+
+fn render_audit_table(events: &[crate::audit::AuditEvent]) {
+    println!(
+        "{:<23} {:<8} {:<22} {}",
+        "Timestamp", "Category", "Type", "Summary"
+    );
+    println!("{}", "-".repeat(80));
+
+    for event in events {
+        let ts = format_unix_ms(event.event_at_unix_ms);
+        let cat = event.category.as_str();
+        let etype = if event.event_type.len() > 22 {
+            &event.event_type[..22]
+        } else {
+            &event.event_type
+        };
+        let summary = if event.summary.len() > 50 {
+            format!("{}...", &event.summary[..47])
+        } else {
+            event.summary.clone()
+        };
+        println!("{:<23} {:<8} {:<22} {}", ts, cat, etype, summary);
+    }
+}
+
+fn format_unix_ms(ms: u64) -> String {
+    let secs = ms / 1000;
+    let days_since_epoch = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Simple date calculation (good enough for display)
+    let mut y = 1970i64;
+    let mut remaining_days = days_since_epoch as i64;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        y += 1;
+    }
+    let is_leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [
+        31,
+        if is_leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0usize;
+    for (i, &days) in month_days.iter().enumerate() {
+        if remaining_days < days {
+            m = i;
+            break;
+        }
+        remaining_days -= days;
+    }
+    format!(
+        "{y:04}-{:02}-{:02} {hours:02}:{minutes:02}:{seconds:02}",
+        m + 1,
+        remaining_days + 1
+    )
 }
 
 fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
