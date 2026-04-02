@@ -262,9 +262,15 @@ cargo build --release
 - `clawguard notify off`
   - disables all notifications (log-only) and stops the SSE server
 - `clawguard watch`
-  - starts the foreground watcher loop for the saved config
-  - delivers immediate notifications for newly persisted alerts and evaluates the daily digest during the watch loop
-  - runs passive audit ingestion after each scan cycle
+  - starts a foreground watcher loop that continuously monitors the detected OpenClaw runtime
+  - **cold boot**: runs a full scan on startup — discovery, all detectors, baseline drift comparison, snapshot + findings persisted to SQLite
+  - **event loop**: uses OS filesystem notifications (`notify` crate on macOS/Linux) to detect changes to watched files; re-scans on change with 2-second debounce
+  - **each scan cycle**: re-discovers runtime → runs all detectors → diffs against approved baselines → persists snapshot → creates alerts for new drift findings (dedup against existing open alerts) → ingests audit events from OpenClaw logs
+  - **notifications**: delivers pending alerts via the configured route (desktop/webhook/telegram) and evaluates daily digest delivery after each iteration
+  - **SSE broadcasting**: with `--sse-port`, starts an SSE server that pushes real-time alert events to connected clients (e.g., the OpenClaw gateway plugin)
+  - `--iterations N` stops after N iterations (0 = run forever, default)
+  - `--poll-interval-ms N` sets the sleep between iterations (default 1000ms)
+  - `--sse-port N` enables the SSE server on the specified port (0 = disabled, default)
   - `--iterations 1` is useful for smoke-testing the cold-boot path without leaving a long-running process behind
 - `clawguard audit`
   - shows recent audit events (config changes, skill/plugin installs, removals)

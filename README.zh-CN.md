@@ -273,8 +273,15 @@ cargo build --release
 - `clawguard notify off`
   - 关闭所有通知（仅日志输出）并停止 SSE 服务器
 - `clawguard watch`
-  - 启动前台 watch 循环，监听文件变化，推送通知
-  - 每次扫描周期后运行被动审计采集
+  - 启动前台 watch 循环，持续监控检测到的 OpenClaw 运行时
+  - **冷启动**：首次运行时执行完整扫描 — 发现运行时、运行所有检测器、基线漂移比对、快照 + findings 持久化到 SQLite
+  - **事件循环**：使用 OS 文件系统通知（macOS/Linux 上的 `notify` crate）检测受监控文件变更；变更后重新扫描，2 秒防抖
+  - **每次扫描周期**：重新发现运行时 → 运行所有检测器 → 与批准基线比对 → 持久化快照 → 为新漂移 findings 创建告警（对已有未解决告警去重）→ 从 OpenClaw 日志采集审计事件
+  - **通知**：每次迭代后通过配置的路由（桌面/webhook/telegram）投递待处理告警，评估是否需要发送每日摘要
+  - **SSE 广播**：使用 `--sse-port` 启动 SSE 服务器，向连接的客户端（如 OpenClaw gateway 插件）实时推送告警事件
+  - `--iterations N` 运行 N 次后停止（0 = 一直运行，默认）
+  - `--poll-interval-ms N` 设置迭代间隔（默认 1000ms）
+  - `--sse-port N` 启用 SSE 服务器（0 = 禁用，默认）
   - `--iterations 1` 可用于冷启动路径的 smoke test，不会留下长驻进程
 - `clawguard audit`
   - 查看近期审计事件（配置变更、skill/plugin 安装/卸载）
