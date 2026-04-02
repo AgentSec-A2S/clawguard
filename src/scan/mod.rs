@@ -1,6 +1,8 @@
 pub mod baseline;
+pub mod bootstrap;
 pub mod cve;
 pub mod finding;
+pub mod hooks;
 pub mod mcp;
 pub mod openclaw;
 pub mod secrets;
@@ -228,6 +230,37 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                             sha256: artifact.sha256,
                             source_label: "env".to_string(),
                             category: FindingCategory::Secrets,
+                        },
+                    );
+                }
+            }
+            ScanDomain::Hooks => {
+                let output = hooks::scan_hooks_dirs(&target.paths, config.max_file_size_bytes);
+                batches.push(output.findings);
+                for artifact in output.artifacts {
+                    insert_artifact(
+                        &mut artifacts_by_path,
+                        BaselineArtifact {
+                            path: artifact.path,
+                            sha256: artifact.sha256,
+                            source_label: "hooks".to_string(),
+                            category: FindingCategory::Config,
+                        },
+                    );
+                }
+            }
+            ScanDomain::Bootstrap => {
+                let output =
+                    bootstrap::scan_bootstrap_dirs(&target.paths, config.max_file_size_bytes);
+                batches.push(output.findings);
+                for artifact in output.artifacts {
+                    insert_artifact(
+                        &mut artifacts_by_path,
+                        BaselineArtifact {
+                            path: artifact.path,
+                            sha256: artifact.sha256,
+                            source_label: "bootstrap".to_string(),
+                            category: FindingCategory::Config,
                         },
                     );
                 }

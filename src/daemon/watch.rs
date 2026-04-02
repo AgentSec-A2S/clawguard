@@ -421,6 +421,8 @@ fn source_label_for_domain(domain: ScanDomain) -> &'static str {
         ScanDomain::Skills => "skills",
         ScanDomain::Mcp => "mcp",
         ScanDomain::Env => "env",
+        ScanDomain::Hooks => "hooks",
+        ScanDomain::Bootstrap => "bootstrap",
     }
 }
 

@@ -20,6 +20,8 @@ pub enum ScanDomain {
     Skills,
     Mcp,
     Env,
+    Hooks,
+    Bootstrap,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

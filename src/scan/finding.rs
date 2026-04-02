@@ -81,7 +81,8 @@ pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
         "exec-host-node"
         | "acp-approve-all"
         | "gateway-node-dangerous-command"
-        | "tool-profile-escalation" => Some("ASI02".into()),
+        | "tool-profile-escalation"
+        | "hook-shell-exec" => Some("ASI02".into()),
         // ASI03: Privilege Escalation
         "exec-security-full"
         | "exec-ask-off"
@@ -93,12 +94,13 @@ pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
         | "sandbox-dangerous-reserved-targets"
         | "sandbox-dangerous-external-sources" => Some("ASI03".into()),
         // ASI04: Data Exfiltration
-        "dangerous-network" | "open-dm-policy" => Some("ASI04".into()),
+        "dangerous-network" | "open-dm-policy" | "hook-network-exfil" => Some("ASI04".into()),
         // ASI05: Configuration Drift
         "exec-ask-fallback-weak"
         | "tripwire-catastrophic"
         | "approval-drift-dangerous-executable"
-        | "approval-drift-interpreter" => Some("ASI05".into()),
+        | "approval-drift-interpreter"
+        | "hook-config-mutation" => Some("ASI05".into()),
         // ASI06: Supply Chain Compromise
         "insecure-plugin-install-path" | "plugin-not-in-allowlist" | "plugin-in-denylist" => {
             Some("ASI06".into())
@@ -106,7 +108,12 @@ pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
         // ASI07: Prompt Injection
         "hook-allows-unsafe-external-content"
         | "hook-allows-request-session-key"
-        | "plugin-hook-prompt-injection" => Some("ASI07".into()),
+        | "plugin-hook-prompt-injection"
+        | "hook-identity-mutation"
+        | "bootstrap-encoded-payload"
+        | "bootstrap-shell-injection"
+        | "bootstrap-prompt-injection"
+        | "bootstrap-obfuscated-content" => Some("ASI07".into()),
         // ASI09: Secrets Exposure (note: secrets detector sets ASI09 directly, this is a fallback)
         "private-key" => Some("ASI09".into()),
         // ASI10: Insecure Defaults

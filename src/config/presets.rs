@@ -28,6 +28,8 @@ fn openclaw_preset() -> Preset {
             // OpenClaw MCP configuration currently lives inside the main JSON5 config.
             scan_target(ScanDomain::Mcp, ["~/.openclaw/openclaw.json"]),
             scan_target(ScanDomain::Env, ["~/.openclaw/.env"]),
+            scan_target(ScanDomain::Hooks, ["~/.openclaw/hooks"]),
+            scan_target(ScanDomain::Bootstrap, ["~/.openclaw/agents"]),
         ],
         critical_files: paths([
             "~/.openclaw/openclaw.json",
