@@ -128,13 +128,13 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
 - `OWASP ASI Top 10 mapping`
   - findings carry an optional `owasp_asi` field mapping to the OWASP Agentic Security Initiative Top 10 categories (ASI02–ASI10)
   - rendered in `--json` output for compliance and reporting workflows
-- `Hook handler scanning` (Sprint 3)
+- `Hook handler scanning` (planned)
   - scans managed hooks (`~/.openclaw/hooks/`) and `hooks.internal.load.extraDirs` directories
   - detects shell execution (`exec(`, `spawn(`, `child_process`) in handler files (High)
   - detects network exfiltration (`fetch(`, `http.request`) in handler files (High)
   - detects identity file mutation (writes to SOUL.md, MEMORY.md, AGENTS.md) (Medium)
   - detects config mutation (writes to openclaw.json, exec-approvals.json) (High)
-- `Bootstrap file integrity` (Sprint 3)
+- `Bootstrap file integrity` (planned)
   - scans workspace bootstrap files (SOUL.md, AGENTS.md, TOOLS.md, IDENTITY.md, USER.md, etc.)
   - detects encoded payloads (base64 > 100 chars) (High)
   - detects shell injection (`$(...)`, backtick commands) (High)

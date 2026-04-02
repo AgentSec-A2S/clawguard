@@ -140,13 +140,13 @@ ClawGuard 故意把 detector catalog 控制得很小，只保留高信号项。
 - `OWASP ASI Top 10 映射`
   - 每个 finding 携带可选 `owasp_asi` 字段，映射到 OWASP Agentic Security Initiative Top 10 分类（ASI02–ASI10）
   - 在 `--json` 输出中渲染，支持合规和报告工作流
-- `Hook 处理程序扫描`（Sprint 3）
+- `Hook 处理程序扫描`（计划中）
   - 扫描托管 hooks（`~/.openclaw/hooks/`）和 `hooks.internal.load.extraDirs` 目录
   - 检测 handler 文件中的 shell 执行（`exec(`、`spawn(`、`child_process`）（High）
   - 检测 handler 文件中的网络外泄（`fetch(`、`http.request`）（High）
   - 检测身份文件篡改（写入 SOUL.md、MEMORY.md、AGENTS.md）（Medium）
   - 检测配置篡改（写入 openclaw.json、exec-approvals.json）（High）
-- `Bootstrap 文件完整性`（Sprint 3）
+- `Bootstrap 文件完整性`（计划中）
   - 扫描工作区 bootstrap 文件（SOUL.md、AGENTS.md、TOOLS.md、IDENTITY.md、USER.md 等）
   - 检测编码载荷（base64 > 100 字符）（High）
   - 检测 shell 注入（`$(...)`、反引号命令）（High）
