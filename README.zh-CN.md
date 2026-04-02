@@ -140,18 +140,23 @@ ClawGuard 故意把 detector catalog 控制得很小，只保留高信号项。
 - `OWASP ASI Top 10 映射`
   - 每个 finding 携带可选 `owasp_asi` 字段，映射到 OWASP Agentic Security Initiative Top 10 分类（ASI02–ASI10）
   - 在 `--json` 输出中渲染，支持合规和报告工作流
-- `Hook 处理程序扫描`（计划中）
+- `Hook 处理程序扫描`
   - 扫描托管 hooks（`~/.openclaw/hooks/`）和 `hooks.internal.load.extraDirs` 目录
-  - 检测 handler 文件中的 shell 执行（`exec(`、`spawn(`、`child_process`）（High）
-  - 检测 handler 文件中的网络外泄（`fetch(`、`http.request`）（High）
-  - 检测身份文件篡改（写入 SOUL.md、MEMORY.md、AGENTS.md）（Medium）
-  - 检测配置篡改（写入 openclaw.json、exec-approvals.json）（High）
-- `Bootstrap 文件完整性`（计划中）
-  - 扫描工作区 bootstrap 文件（SOUL.md、AGENTS.md、TOOLS.md、IDENTITY.md、USER.md 等）
-  - 检测编码载荷（base64 > 100 字符）（High）
-  - 检测 shell 注入（`$(...)`、反引号命令）（High）
-  - 检测提示注入标记（"ignore previous instructions"、"system override"）（Critical）
-  - 检测混淆内容（hex/unicode 转义 > 40 字符）（Medium）
+  - 按上游加载顺序查找 handler：`handler.ts` → `handler.js` → `index.ts` → `index.js`
+  - 哈希 `HOOK.md` 元数据用于基线漂移检测
+  - 检测 shell 执行：`child_process`、`exec(`、`spawn(`、`execFile(`、`import("child_process")`、`process.binding()`（High）
+  - 检测网络外泄：`fetch(`、`http.request`、`WebSocket`、`net.connect`、`dns.resolve`、`XMLHttpRequest`、`EventSource`（High）
+  - 检测身份文件篡改：写入 SOUL.md、MEMORY.md、AGENTS.md、TOOLS.md、USER.md（Medium）
+  - 检测配置篡改：写入 openclaw.json、exec-approvals.json（High）
+  - 正确的块注释跟踪（多行 `/* ... */`）防止检测绕过
+- `Bootstrap 文件完整性`
+  - 扫描所有 agent 工作区（`~/.openclaw/agents/*/agent/`）中的 9 个 bootstrap 文件
+  - 文件：AGENTS.md、SOUL.md、TOOLS.md、IDENTITY.md、USER.md、HEARTBEAT.md、BOOTSTRAP.md、MEMORY.md、memory.md
+  - 检测编码载荷：base64 字符串 ≥100 字符，支持标准和 URL-safe 编码（High）
+  - 检测 shell 注入：`$(...)` 命令替换、`${}` 变量展开（含 shell 上下文）、反引号替换（High）
+  - 检测提示注入标记："ignore previous instructions"、"system override"、"forget everything" 等（Critical）
+  - 检测混淆内容：每行 ≥10 个 hex（`\x`）或 unicode（`\u`）转义序列（Medium）
+  - 工作区发现不会被父目录中的诱饵文件抑制
 - `Advisory matching`
   - 当能读到版本证据时，将本地版本与 advisory feed 做离线匹配
 - `Baseline approval`

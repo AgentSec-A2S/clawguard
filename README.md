@@ -128,18 +128,23 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
 - `OWASP ASI Top 10 mapping`
   - findings carry an optional `owasp_asi` field mapping to the OWASP Agentic Security Initiative Top 10 categories (ASI02–ASI10)
   - rendered in `--json` output for compliance and reporting workflows
-- `Hook handler scanning` (planned)
+- `Hook handler scanning`
   - scans managed hooks (`~/.openclaw/hooks/`) and `hooks.internal.load.extraDirs` directories
-  - detects shell execution (`exec(`, `spawn(`, `child_process`) in handler files (High)
-  - detects network exfiltration (`fetch(`, `http.request`) in handler files (High)
-  - detects identity file mutation (writes to SOUL.md, MEMORY.md, AGENTS.md) (Medium)
-  - detects config mutation (writes to openclaw.json, exec-approvals.json) (High)
-- `Bootstrap file integrity` (planned)
-  - scans workspace bootstrap files (SOUL.md, AGENTS.md, TOOLS.md, IDENTITY.md, USER.md, etc.)
-  - detects encoded payloads (base64 > 100 chars) (High)
-  - detects shell injection (`$(...)`, backtick commands) (High)
-  - detects prompt injection markers ("ignore previous instructions", "system override") (Critical)
-  - detects obfuscated content (hex/unicode escapes > 40 chars) (Medium)
+  - follows upstream handler load order: `handler.ts` → `handler.js` → `index.ts` → `index.js`
+  - hashes `HOOK.md` metadata for baseline drift detection
+  - detects shell execution: `child_process`, `exec(`, `spawn(`, `execFile(`, `import("child_process")`, `process.binding()` (High)
+  - detects network exfiltration: `fetch(`, `http.request`, `WebSocket`, `net.connect`, `dns.resolve`, `XMLHttpRequest`, `EventSource` (High)
+  - detects identity file mutation: writes to SOUL.md, MEMORY.md, AGENTS.md, TOOLS.md, USER.md (Medium)
+  - detects config mutation: writes to openclaw.json, exec-approvals.json (High)
+  - proper block comment tracking (multi-line `/* ... */`) to prevent detection bypass
+- `Bootstrap file integrity`
+  - scans 9 workspace bootstrap files across all agent workspaces (`~/.openclaw/agents/*/agent/`)
+  - files: AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, HEARTBEAT.md, BOOTSTRAP.md, MEMORY.md, memory.md
+  - detects encoded payloads: base64 strings ≥100 chars, supports standard and URL-safe encoding (High)
+  - detects shell injection: `$(...)` command substitution, `${}` variable expansion with shell context, backtick substitution (High)
+  - detects prompt injection markers: "ignore previous instructions", "system override", "forget everything", etc. (Critical)
+  - detects obfuscated content: ≥10 hex (`\x`) or unicode (`\u`) escape sequences per line (Medium)
+  - workspace discovery cannot be suppressed by decoy files in the parent directory
 - `Advisory matching`
   - matches local OpenClaw version evidence against the bundled advisory feed when version evidence is available
 - `Baseline approval`
