@@ -102,9 +102,12 @@ pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
         | "approval-drift-interpreter"
         | "hook-config-mutation" => Some("ASI05".into()),
         // ASI06: Supply Chain Compromise
-        "insecure-plugin-install-path" | "plugin-not-in-allowlist" | "plugin-in-denylist" => {
-            Some("ASI06".into())
-        }
+        "insecure-plugin-install-path"
+        | "plugin-not-in-allowlist"
+        | "plugin-in-denylist"
+        | "skill-no-provenance"
+        | "skill-unapproved-change"
+        | "skill-remote-redirect" => Some("ASI06".into()),
         // ASI07: Prompt Injection
         "hook-allows-unsafe-external-content"
         | "hook-allows-request-session-key"

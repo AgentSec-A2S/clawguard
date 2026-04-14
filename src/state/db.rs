@@ -245,17 +245,21 @@ impl StateStore {
     pub fn upsert_baseline(&mut self, baseline: &BaselineRecord) -> Result<(), StateStoreError> {
         self.run_write_with_retry(|conn| {
             conn.execute(
-                "INSERT INTO baselines (path, sha256, approved_at_unix_ms, source_label)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO baselines (path, sha256, approved_at_unix_ms, source_label, git_remote_url, git_head_sha)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(path) DO UPDATE SET
                      sha256 = excluded.sha256,
                      approved_at_unix_ms = excluded.approved_at_unix_ms,
-                     source_label = excluded.source_label",
+                     source_label = excluded.source_label,
+                     git_remote_url = excluded.git_remote_url,
+                     git_head_sha = excluded.git_head_sha",
                 (
                     &baseline.path,
                     &baseline.sha256,
                     baseline.approved_at_unix_ms as i64,
                     &baseline.source_label,
+                    &baseline.git_remote_url,
+                    &baseline.git_head_sha,
                 ),
             )?;
 
@@ -310,17 +314,21 @@ impl StateStore {
 
             for baseline in baselines {
                 transaction.execute(
-                    "INSERT INTO baselines (path, sha256, approved_at_unix_ms, source_label)
-                     VALUES (?1, ?2, ?3, ?4)
+                    "INSERT INTO baselines (path, sha256, approved_at_unix_ms, source_label, git_remote_url, git_head_sha)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                      ON CONFLICT(path) DO UPDATE SET
                          sha256 = excluded.sha256,
                          approved_at_unix_ms = excluded.approved_at_unix_ms,
-                         source_label = excluded.source_label",
+                         source_label = excluded.source_label,
+                         git_remote_url = excluded.git_remote_url,
+                         git_head_sha = excluded.git_head_sha",
                     (
                         &baseline.path,
                         &baseline.sha256,
                         baseline.approved_at_unix_ms as i64,
                         &baseline.source_label,
+                        &baseline.git_remote_url,
+                        &baseline.git_head_sha,
                     ),
                 )?;
             }
@@ -333,7 +341,7 @@ impl StateStore {
 
     pub fn list_baselines(&self) -> Result<Vec<BaselineRecord>, StateStoreError> {
         let mut statement = self.conn.prepare(
-            "SELECT path, sha256, approved_at_unix_ms, source_label
+            "SELECT path, sha256, approved_at_unix_ms, source_label, git_remote_url, git_head_sha
              FROM baselines
              ORDER BY path ASC",
         )?;
@@ -343,6 +351,8 @@ impl StateStore {
                 sha256: row.get(1)?,
                 approved_at_unix_ms: row.get::<_, i64>(2)? as u64,
                 source_label: row.get(3)?,
+                git_remote_url: row.get(4)?,
+                git_head_sha: row.get(5)?,
             })
         })?;
 
@@ -359,7 +369,7 @@ impl StateStore {
         requested_path: &str,
     ) -> Result<Option<BaselineRecord>, StateStoreError> {
         let mut statement = self.conn.prepare(
-            "SELECT path, sha256, approved_at_unix_ms, source_label
+            "SELECT path, sha256, approved_at_unix_ms, source_label, git_remote_url, git_head_sha
              FROM baselines
              WHERE path = ?1",
         )?;
@@ -374,6 +384,8 @@ impl StateStore {
             sha256: row.get(1)?,
             approved_at_unix_ms: row.get::<_, i64>(2)? as u64,
             source_label: row.get(3)?,
+            git_remote_url: row.get(4)?,
+            git_head_sha: row.get(5)?,
         }))
     }
 
@@ -1181,6 +1193,35 @@ fn bootstrap_schema(conn: &Connection) -> Result<(), StateStoreError> {
             ON audit_events(event_type);
         ",
     )?;
+
+    migrate_baselines_provenance(conn)?;
+
+    Ok(())
+}
+
+/// Idempotent migration: add provenance columns to baselines table (v1 → v2).
+fn migrate_baselines_provenance(conn: &Connection) -> Result<(), StateStoreError> {
+    let mut has_git_remote_url = false;
+    let mut has_git_head_sha = false;
+
+    let mut stmt = conn.prepare("PRAGMA table_info(baselines)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        let col_name = row?;
+        if col_name == "git_remote_url" {
+            has_git_remote_url = true;
+        }
+        if col_name == "git_head_sha" {
+            has_git_head_sha = true;
+        }
+    }
+
+    if !has_git_remote_url {
+        conn.execute_batch("ALTER TABLE baselines ADD COLUMN git_remote_url TEXT")?;
+    }
+    if !has_git_head_sha {
+        conn.execute_batch("ALTER TABLE baselines ADD COLUMN git_head_sha TEXT")?;
+    }
 
     Ok(())
 }

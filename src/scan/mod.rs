@@ -60,6 +60,8 @@ pub struct BaselineArtifact {
     pub sha256: String,
     pub source_label: String,
     pub category: FindingCategory,
+    pub git_remote_url: Option<String>,
+    pub git_head_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +181,8 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                             sha256: artifact.sha256,
                             source_label: "config".to_string(),
                             category: FindingCategory::Config,
+                            git_remote_url: None,
+                            git_head_sha: None,
                         },
                     );
                 }
@@ -190,6 +194,10 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                         skills::scan_skill_dir(path, config.max_file_size_bytes, excluded_dirs);
                     batches.push(output.findings);
                     for artifact in output.artifacts {
+                        let (git_remote_url, git_head_sha) = match &artifact.git_provenance {
+                            Some(prov) => (prov.remote_url.clone(), prov.head_sha.clone()),
+                            None => (None, None),
+                        };
                         insert_artifact(
                             &mut artifacts_by_path,
                             BaselineArtifact {
@@ -197,6 +205,8 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                                 sha256: artifact.sha256,
                                 source_label: "skills".to_string(),
                                 category: FindingCategory::Skills,
+                                git_remote_url,
+                                git_head_sha,
                             },
                         );
                     }
@@ -214,6 +224,8 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                             sha256: artifact.sha256,
                             source_label: "mcp".to_string(),
                             category: FindingCategory::Mcp,
+                            git_remote_url: None,
+                            git_head_sha: None,
                         },
                     );
                 }
@@ -230,6 +242,8 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                             sha256: artifact.sha256,
                             source_label: "env".to_string(),
                             category: FindingCategory::Secrets,
+                            git_remote_url: None,
+                            git_head_sha: None,
                         },
                     );
                 }
@@ -245,6 +259,8 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                             sha256: artifact.sha256,
                             source_label: "hooks".to_string(),
                             category: FindingCategory::Config,
+                            git_remote_url: None,
+                            git_head_sha: None,
                         },
                     );
                 }
@@ -261,6 +277,8 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                             sha256: artifact.sha256,
                             source_label: "bootstrap".to_string(),
                             category: FindingCategory::Config,
+                            git_remote_url: None,
+                            git_head_sha: None,
                         },
                     );
                 }

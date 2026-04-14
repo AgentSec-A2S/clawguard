@@ -63,12 +63,16 @@ fn restorable_policy_files_produce_restore_payload_candidates() {
                 sha256: "aaa".to_string(),
                 source_label: "config".to_string(),
                 category: FindingCategory::Config,
+                git_remote_url: None,
+                git_head_sha: None,
             },
             BaselineArtifact {
                 path: approvals_path.display().to_string(),
                 sha256: "bbb".to_string(),
                 source_label: "config".to_string(),
                 category: FindingCategory::Config,
+                git_remote_url: None,
+                git_head_sha: None,
             },
         ],
     );
@@ -103,12 +107,16 @@ fn missing_or_non_utf8_policy_files_are_skipped() {
                 sha256: "aaa".to_string(),
                 source_label: "config".to_string(),
                 category: FindingCategory::Config,
+                git_remote_url: None,
+                git_head_sha: None,
             },
             BaselineArtifact {
                 path: binary_path.display().to_string(),
                 sha256: "bbb".to_string(),
                 source_label: "config".to_string(),
                 category: FindingCategory::Config,
+                git_remote_url: None,
+                git_head_sha: None,
             },
         ],
     );

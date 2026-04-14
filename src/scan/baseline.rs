@@ -207,3 +207,112 @@ fn evidence_for_drift(drift: &BaselineDrift) -> String {
         (None, None) => "approved=none, current=missing".to_string(),
     }
 }
+
+// ---- Skill TOFU provenance findings ----
+
+/// Generate provenance findings by comparing skill artifacts against stored baselines.
+/// Only considers artifacts with `source_label == "skills"`.
+pub fn provenance_findings_for_artifacts(
+    baselines: &[BaselineRecord],
+    artifacts: &[BaselineArtifact],
+) -> Vec<Finding> {
+    let baseline_by_path: BTreeMap<&str, &BaselineRecord> = baselines
+        .iter()
+        .filter(|b| b.source_label == "skills")
+        .map(|b| (b.path.as_str(), b))
+        .collect();
+
+    let mut findings = Vec::new();
+
+    for artifact in artifacts {
+        if artifact.source_label != "skills" {
+            continue;
+        }
+
+        match baseline_by_path.get(artifact.path.as_str()) {
+            None => {
+                // Skill has no baseline at all → Info
+                findings.push(Finding {
+                    id: format!("provenance:skill-no-provenance:{}", artifact.path),
+                    detector_id: "provenance".to_string(),
+                    severity: Severity::Info,
+                    category: FindingCategory::Skills,
+                    runtime_confidence: RuntimeConfidence::ActiveRuntime,
+                    path: artifact.path.clone(),
+                    line: None,
+                    evidence: None,
+                    plain_english_explanation:
+                        "This skill has no approved baseline. Run `clawguard baseline approve` to establish trust."
+                            .to_string(),
+                    recommended_action: RecommendedAction {
+                        label: "Approve baseline".to_string(),
+                        command_hint: Some("clawguard baseline approve".to_string()),
+                    },
+                    fixability: Fixability::Manual,
+                    fix: None,
+                    owasp_asi: super::finding::owasp_asi_for_kind("skill-no-provenance"),
+                });
+            }
+            Some(baseline) => {
+                // Check hash change
+                if baseline.sha256 != artifact.sha256 {
+                    findings.push(Finding {
+                        id: format!("provenance:skill-unapproved-change:{}", artifact.path),
+                        detector_id: "provenance".to_string(),
+                        severity: Severity::Medium,
+                        category: FindingCategory::Skills,
+                        runtime_confidence: RuntimeConfidence::ActiveRuntime,
+                        path: artifact.path.clone(),
+                        line: None,
+                        evidence: Some(format!(
+                            "approved={}, current={}",
+                            baseline.sha256, artifact.sha256
+                        )),
+                        plain_english_explanation:
+                            "This skill's content has changed since it was last approved. The modification was not authorized via `clawguard baseline approve`."
+                                .to_string(),
+                        recommended_action: RecommendedAction {
+                            label: "Review changes, then approve or investigate".to_string(),
+                            command_hint: Some("clawguard baseline approve".to_string()),
+                        },
+                        fixability: Fixability::Manual,
+                        fix: None,
+                        owasp_asi: super::finding::owasp_asi_for_kind("skill-unapproved-change"),
+                    });
+                }
+
+                // Check git remote URL change (only when both sides have a value)
+                if let (Some(baseline_url), Some(current_url)) =
+                    (&baseline.git_remote_url, &artifact.git_remote_url)
+                {
+                    if baseline_url != current_url {
+                        findings.push(Finding {
+                            id: format!("provenance:skill-remote-redirect:{}", artifact.path),
+                            detector_id: "provenance".to_string(),
+                            severity: Severity::High,
+                            category: FindingCategory::Skills,
+                            runtime_confidence: RuntimeConfidence::ActiveRuntime,
+                            path: artifact.path.clone(),
+                            line: None,
+                            evidence: Some(format!(
+                                "approved_remote={baseline_url}, current_remote={current_url}"
+                            )),
+                            plain_english_explanation:
+                                "This skill's git remote URL has changed since it was last approved. This may indicate a supply chain redirect attack."
+                                    .to_string(),
+                            recommended_action: RecommendedAction {
+                                label: "Verify the new remote URL is legitimate".to_string(),
+                                command_hint: None,
+                            },
+                            fixability: Fixability::Manual,
+                            fix: None,
+                            owasp_asi: super::finding::owasp_asi_for_kind("skill-remote-redirect"),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    findings
+}

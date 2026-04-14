@@ -29,8 +29,8 @@ use crate::scan::baseline::{
     collect_restore_payload_candidates, restore_target_kind_for_path, RestoreTargetKind,
 };
 use crate::scan::{
-    collect_scan_evidence, run_scan, runtime_not_detected_result, BaselineArtifact, ScanResult,
-    ScanSummary, Severity,
+    collect_scan_evidence, runtime_not_detected_result, BaselineArtifact, ScanResult, ScanSummary,
+    Severity,
 };
 use crate::state::db::{StateStore, StateStoreConfig};
 use crate::state::model::{AlertStatus, BaselineRecord, RestorePayloadRecord, StateWarning};
@@ -1596,7 +1596,36 @@ fn render_scan_output(
     discovery: &crate::discovery::DiscoveryReport,
     json: bool,
 ) -> ExitCode {
-    let result = run_scan(config, discovery);
+    let evidence = collect_scan_evidence(config, discovery);
+
+    // Best-effort provenance check: if state DB exists, load baselines and generate
+    // provenance findings. If no DB, skip — provenance is advisory, not blocking.
+    let home_dir = resolve_home_dir();
+    let db_path = state_db_path_for_home(&home_dir);
+    let provenance_findings = if db_path.exists() {
+        open_state_store_for_home(&home_dir)
+            .ok()
+            .map(|state| {
+                let baselines = state.store.list_baselines().unwrap_or_default();
+                crate::scan::baseline::provenance_findings_for_artifacts(
+                    &baselines,
+                    &evidence.artifacts,
+                )
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let result = if provenance_findings.is_empty() {
+        evidence.result
+    } else {
+        ScanResult::from_batches(vec![
+            evidence.result.findings().to_vec(),
+            provenance_findings,
+        ])
+    };
+
     render_result_output(result, json)
 }
 
@@ -2127,6 +2156,8 @@ fn approve_baselines_from_artifacts(
             sha256: artifact.sha256.clone(),
             approved_at_unix_ms,
             source_label: artifact.source_label.clone(),
+            git_remote_url: artifact.git_remote_url.clone(),
+            git_head_sha: artifact.git_head_sha.clone(),
         })
         .collect();
     let source_labels = approval_source_labels(store, &baselines)?;

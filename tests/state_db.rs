@@ -884,6 +884,8 @@ fn baseline_record(path: &str, sha256: &str) -> BaselineRecord {
         sha256: sha256.to_string(),
         approved_at_unix_ms: 1_763_573_000_000,
         source_label: "test-fixture".to_string(),
+        git_remote_url: None,
+        git_head_sha: None,
     }
 }
 

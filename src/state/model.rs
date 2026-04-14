@@ -29,6 +29,8 @@ pub struct BaselineRecord {
     pub sha256: String,
     pub approved_at_unix_ms: u64,
     pub source_label: String,
+    pub git_remote_url: Option<String>,
+    pub git_head_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

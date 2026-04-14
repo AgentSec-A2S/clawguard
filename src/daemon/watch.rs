@@ -15,7 +15,9 @@ use crate::discovery::{
     discover_from_builtin_presets, DetectedRuntime, DiscoveryOptions, DiscoveryReport,
     DiscoveryWarning,
 };
-use crate::scan::baseline::{diff_artifacts_against_baselines, drifts_to_findings};
+use crate::scan::baseline::{
+    diff_artifacts_against_baselines, drifts_to_findings, provenance_findings_for_artifacts,
+};
 use crate::scan::{Finding, ScanResult};
 use crate::state::db::{StateStore, StateStoreError};
 use crate::state::model::{AlertRecord, AlertStatus, ScanSnapshot};
@@ -230,9 +232,12 @@ impl WatchService {
             &baselines,
             &evidence.artifacts,
         ));
+        let provenance_findings =
+            provenance_findings_for_artifacts(&baselines, &evidence.artifacts);
         let combined = ScanResult::from_batches(vec![
             evidence.result.findings().to_vec(),
             drift_findings.clone(),
+            provenance_findings,
         ]);
         let snapshot = ScanSnapshot {
             recorded_at_unix_ms,

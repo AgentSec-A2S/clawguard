@@ -137,12 +137,16 @@ fn baseline_diff_reports_added_modified_and_removed_paths() {
                 sha256: "aaa".to_string(),
                 approved_at_unix_ms: 1_710_000_000_000,
                 source_label: "config".to_string(),
+                git_remote_url: None,
+                git_head_sha: None,
             },
             BaselineRecord {
                 path: "/tmp/skills/old/SKILL.md".to_string(),
                 sha256: "bbb".to_string(),
                 approved_at_unix_ms: 1_710_000_000_000,
                 source_label: "skills".to_string(),
+                git_remote_url: None,
+                git_head_sha: None,
             },
         ],
         &[
@@ -151,12 +155,16 @@ fn baseline_diff_reports_added_modified_and_removed_paths() {
                 sha256: "changed".to_string(),
                 source_label: "config".to_string(),
                 category: FindingCategory::Config,
+                git_remote_url: None,
+                git_head_sha: None,
             },
             BaselineArtifact {
                 path: "/tmp/skills/new/SKILL.md".to_string(),
                 sha256: "ccc".to_string(),
                 source_label: "skills".to_string(),
                 category: FindingCategory::Skills,
+                git_remote_url: None,
+                git_head_sha: None,
             },
         ],
     );
@@ -181,12 +189,16 @@ fn baseline_diff_ignores_source_label_only_changes_and_empty_inputs() {
             sha256: "aaa".to_string(),
             approved_at_unix_ms: 1_710_000_000_000,
             source_label: "config".to_string(),
+            git_remote_url: None,
+            git_head_sha: None,
         }],
         &[BaselineArtifact {
             path: "/tmp/openclaw.json".to_string(),
             sha256: "aaa".to_string(),
             source_label: "mcp".to_string(),
             category: FindingCategory::Mcp,
+            git_remote_url: None,
+            git_head_sha: None,
         }],
     );
 
@@ -209,6 +221,8 @@ fn baseline_diff_handles_added_removed_and_no_change_boundaries() {
             sha256: "aaa".to_string(),
             source_label: "env".to_string(),
             category: FindingCategory::Secrets,
+            git_remote_url: None,
+            git_head_sha: None,
         }],
     );
     assert_eq!(added.len(), 1);
@@ -220,6 +234,8 @@ fn baseline_diff_handles_added_removed_and_no_change_boundaries() {
             sha256: "bbb".to_string(),
             approved_at_unix_ms: 1_710_000_000_000,
             source_label: "env".to_string(),
+            git_remote_url: None,
+            git_head_sha: None,
         }],
         &[],
     );
@@ -232,12 +248,16 @@ fn baseline_diff_handles_added_removed_and_no_change_boundaries() {
             sha256: "ccc".to_string(),
             approved_at_unix_ms: 1_710_000_000_000,
             source_label: "env".to_string(),
+            git_remote_url: None,
+            git_head_sha: None,
         }],
         &[BaselineArtifact {
             path: "/tmp/same.env".to_string(),
             sha256: "ccc".to_string(),
             source_label: "env".to_string(),
             category: FindingCategory::Secrets,
+            git_remote_url: None,
+            git_head_sha: None,
         }],
     );
     assert!(no_change.is_empty());
@@ -1168,6 +1188,8 @@ fn event_rescan_records_drift_alerts_and_debounces_burst_events() {
                 sha256: config_artifact.sha256.clone(),
                 approved_at_unix_ms: 1_763_899_999_000,
                 source_label: "config".to_string(),
+                git_remote_url: None,
+                git_head_sha: None,
             }],
         )
         .expect("baseline seeding should succeed");
@@ -1331,6 +1353,8 @@ fn acknowledged_drift_alert_is_not_duplicated_on_next_rescan() {
                 sha256: config_artifact.sha256.clone(),
                 approved_at_unix_ms: 1_763_899_999_000,
                 source_label: "config".to_string(),
+                git_remote_url: None,
+                git_head_sha: None,
             }],
         )
         .expect("baseline seeding should succeed");

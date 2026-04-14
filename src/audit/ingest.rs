@@ -495,7 +495,7 @@ fn now_ms() -> u64 {
 /// Parse an ISO 8601 timestamp string into Unix milliseconds.
 /// Supports formats: "2026-04-02T10:15:03.123Z", "2026-04-02T10:15:03Z", "2026-04-02T10:15:03"
 /// Falls back to now_ms() on parse failure.
-fn parse_iso_timestamp_ms(ts: &str) -> u64 {
+pub fn parse_iso_timestamp_ms(ts: &str) -> u64 {
     if ts.is_empty() {
         return now_ms();
     }

@@ -13,10 +13,17 @@ pub enum SkillSourceHint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitProvenance {
+    pub remote_url: Option<String>,
+    pub head_sha: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillArtifact {
     pub path: String,
     pub sha256: String,
     pub source_hint: Option<SkillSourceHint>,
+    pub git_provenance: Option<GitProvenance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -44,10 +51,13 @@ pub fn scan_skill_dir(
         };
         let resolved_path = resolved_path_string(&file_path);
 
+        let source_hint = detect_source_hint(dir, &file_path);
+        let git_provenance = extract_git_provenance(dir, &file_path);
         artifacts.push(SkillArtifact {
             path: resolved_path.clone(),
             sha256: sha256_hex(contents.as_bytes()),
-            source_hint: detect_source_hint(dir, &file_path),
+            source_hint,
+            git_provenance,
         });
 
         findings.extend(findings_for_content(&contents, &resolved_path));
@@ -94,6 +104,217 @@ fn canonicalized_boundary(path: &Path) -> Option<PathBuf> {
     } else {
         boundary.parent().map(Path::to_path_buf)
     }
+}
+
+// ---- Git provenance extraction ----
+
+/// Extract git provenance (remote URL + HEAD SHA) for a skill file.
+/// Walks up from file_path within scan_root looking for .git.
+/// Handles .git as directory (normal repo) or file (worktree/submodule).
+fn extract_git_provenance(scan_root: &Path, file_path: &Path) -> Option<GitProvenance> {
+    let git_dir = find_git_dir(scan_root, file_path)?;
+    let remote_url = parse_git_config_remote_url(&git_dir);
+    let head_sha = parse_git_head_sha(&git_dir);
+
+    if remote_url.is_none() && head_sha.is_none() {
+        return None;
+    }
+
+    Some(GitProvenance {
+        remote_url,
+        head_sha,
+    })
+}
+
+/// Find the .git directory for a file, walking up from file_path within scan_root.
+/// Handles .git as a file (worktrees/submodules: contains `gitdir: <path>`).
+fn find_git_dir(scan_root: &Path, file_path: &Path) -> Option<PathBuf> {
+    let scan_root = canonicalized_boundary(scan_root)?;
+    let path = fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+    let mut current = if path.is_dir() {
+        Some(path.as_path())
+    } else {
+        path.parent()
+    };
+
+    while let Some(candidate) = current {
+        if !candidate.starts_with(&scan_root) {
+            break;
+        }
+
+        let git_path = candidate.join(".git");
+        if git_path.is_dir() {
+            return Some(git_path);
+        }
+        // .git can be a file for worktrees/submodules: "gitdir: /path/to/real/.git"
+        if git_path.is_file() {
+            if let Ok(content) = fs::read_to_string(&git_path) {
+                let trimmed = content.trim();
+                if let Some(gitdir) = trimmed.strip_prefix("gitdir:") {
+                    let resolved = candidate.join(gitdir.trim());
+                    let resolved = fs::canonicalize(&resolved).unwrap_or(resolved);
+                    // Boundary guard: reject gitdir paths that escape scan_root
+                    // (e.g. attacker-crafted .git file pointing outside)
+                    if resolved.is_dir() && resolved.starts_with(&scan_root) {
+                        return Some(resolved);
+                    }
+                }
+            }
+        }
+
+        if candidate == scan_root {
+            break;
+        }
+        current = candidate.parent();
+    }
+
+    None
+}
+
+/// Parse the remote origin URL from .git/config.
+/// Simple line-by-line INI parser — no external crate needed.
+/// Parse remote origin URL from git config content string.
+/// Exposed as pub(crate) for fuzz testing.
+pub fn parse_git_config_remote_url_from_str(content: &str) -> Option<String> {
+    let mut in_remote_origin = false;
+    for line in content.lines() {
+        if line.len() > 4096 {
+            continue;
+        }
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_remote_origin = trimmed == "[remote \"origin\"]";
+            continue;
+        }
+        if in_remote_origin {
+            if let Some(value) = trimmed.strip_prefix("url") {
+                let value = value.trim_start();
+                if let Some(url) = value.strip_prefix('=') {
+                    let url = url.trim();
+                    if !url.is_empty() && url.is_ascii() {
+                        return Some(url.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse HEAD SHA from git HEAD content + optional packed-refs content.
+/// Exposed as pub(crate) for fuzz testing.
+pub fn parse_git_head_sha_from_str(
+    head_content: &str,
+    ref_content: Option<&str>,
+    packed_refs_content: Option<&str>,
+) -> Option<String> {
+    let trimmed = head_content.trim();
+    if let Some(ref_path) = trimmed.strip_prefix("ref: ") {
+        // Try loose ref
+        if let Some(ref_data) = ref_content {
+            let sha = ref_data.trim();
+            if is_hex_sha(sha) {
+                return Some(sha.to_string());
+            }
+        }
+        // Try packed-refs
+        if let Some(packed) = packed_refs_content {
+            let ref_name = ref_path.trim();
+            for line in packed.lines() {
+                let line = line.trim();
+                if line.starts_with('#') || line.starts_with('^') {
+                    continue;
+                }
+                if let Some((sha, name)) = line.split_once(' ') {
+                    if name == ref_name && is_hex_sha(sha) {
+                        return Some(sha.to_string());
+                    }
+                }
+            }
+        }
+        None
+    } else if is_hex_sha(trimmed) {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_git_config_remote_url(git_dir: &Path) -> Option<String> {
+    let config_path = git_dir.join("config");
+    let content = fs::read_to_string(&config_path).ok()?;
+
+    let mut in_remote_origin = false;
+    for line in content.lines() {
+        if line.len() > 4096 {
+            continue; // skip extremely long lines
+        }
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_remote_origin = trimmed == "[remote \"origin\"]";
+            continue;
+        }
+        if in_remote_origin {
+            if let Some(value) = trimmed.strip_prefix("url") {
+                let value = value.trim_start();
+                if let Some(url) = value.strip_prefix('=') {
+                    let url = url.trim();
+                    if !url.is_empty() && url.is_ascii() {
+                        return Some(url.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Parse the HEAD SHA from .git/HEAD.
+/// Supports symbolic refs (ref: refs/heads/X) and detached HEAD (raw SHA).
+/// Falls back to .git/packed-refs when loose ref file is missing.
+fn parse_git_head_sha(git_dir: &Path) -> Option<String> {
+    let head_path = git_dir.join("HEAD");
+    let content = fs::read_to_string(&head_path).ok()?;
+    let trimmed = content.trim();
+
+    if let Some(ref_path) = trimmed.strip_prefix("ref: ") {
+        // Symbolic ref — try loose ref file first
+        let ref_file = git_dir.join(ref_path.trim());
+        if let Ok(sha) = fs::read_to_string(&ref_file) {
+            let sha = sha.trim();
+            if is_hex_sha(sha) {
+                return Some(sha.to_string());
+            }
+        }
+        // Fallback: parse packed-refs
+        let packed_refs = git_dir.join("packed-refs");
+        if let Ok(packed) = fs::read_to_string(&packed_refs) {
+            let ref_name = ref_path.trim();
+            for line in packed.lines() {
+                let line = line.trim();
+                if line.starts_with('#') || line.starts_with('^') {
+                    continue;
+                }
+                // Format: "<sha> <ref>"
+                if let Some((sha, name)) = line.split_once(' ') {
+                    if name == ref_name && is_hex_sha(sha) {
+                        return Some(sha.to_string());
+                    }
+                }
+            }
+        }
+        None
+    } else if is_hex_sha(trimmed) {
+        // Detached HEAD — raw SHA
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn is_hex_sha(s: &str) -> bool {
+    s.len() >= 40 && s.len() <= 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn collect_scannable_files(
