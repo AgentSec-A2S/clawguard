@@ -50,69 +50,73 @@ export default {
 
     // Slash commands
     api.registerCommand({
-      id: "clawguard_feed",
+      name: "clawguard_feed",
       description: "Toggle ClawGuard alert feed on/off",
       handler: async () => {
         feedEnabled = !feedEnabled;
-        return feedEnabled
-          ? "ClawGuard alert feed resumed"
-          : "ClawGuard alert feed paused";
+        return {
+          text: feedEnabled
+            ? "ClawGuard alert feed resumed"
+            : "ClawGuard alert feed paused",
+        };
       },
     });
 
     api.registerCommand({
-      id: "clawguard_status",
+      name: "clawguard_status",
       description: "Show ClawGuard security status",
       handler: async () => {
         try {
           const res = await fetch(`${baseUrl}/status`);
           const data = await res.json();
-          return formatStatus(data);
+          return { text: formatStatus(data) };
         } catch {
-          return "ClawGuard is not reachable. Is `clawguard watch` running?";
+          return { text: "ClawGuard is not reachable. Is `clawguard watch` running?" };
         }
       },
     });
 
     api.registerCommand({
-      id: "clawguard_alerts",
+      name: "clawguard_alerts",
       description: "Show recent ClawGuard alerts",
       handler: async () => {
         try {
           const res = await fetch(`${baseUrl}/alerts?limit=10`);
           const data = await res.json();
-          return formatAlertList(data.alerts || []);
+          return { text: formatAlertList(data.alerts || []) };
         } catch {
-          return "ClawGuard is not reachable. Is `clawguard watch` running?";
+          return { text: "ClawGuard is not reachable. Is `clawguard watch` running?" };
         }
       },
     });
 
     api.registerCommand({
-      id: "clawguard_help",
+      name: "clawguard_help",
       description: "Show all ClawGuard commands and usage",
       handler: async () => {
-        return [
-          "\u{1F6E1}\uFE0F ClawGuard — Security Scanner for OpenClaw",
-          "",
-          "Telegram commands:",
-          "  /clawguard_help     Show this help message",
-          "  /clawguard_status   Show ClawGuard connection status",
-          "  /clawguard_alerts   Show recent alerts (if available)",
-          "  /clawguard_feed     Toggle the real-time alert feed on/off",
-          "",
-          "CLI commands (run on the host):",
-          "  clawguard               First run: setup wizard + scan; after: status view",
-          "  clawguard scan           Run a one-time security scan",
-          "  clawguard watch          Start continuous monitoring (required for Telegram alerts)",
-          "  clawguard audit          Show audit event log (config/skill/plugin changes)",
-          "  clawguard status         Show persisted security status",
-          "  clawguard alerts         Show alert history",
-          "  clawguard baseline approve   Approve current state as drift baseline",
-          "  clawguard notify         View/change notification settings",
-          "",
-          `Tip: Run \`clawguard watch\` with SSE enabled (port ${port}) to enable this Telegram integration.`,
-        ].join("\n");
+        return {
+          text: [
+            "\u{1F6E1}\uFE0F ClawGuard — Security Scanner for OpenClaw",
+            "",
+            "Telegram commands:",
+            "  /clawguard_help     Show this help message",
+            "  /clawguard_status   Show ClawGuard connection status",
+            "  /clawguard_alerts   Show recent alerts (if available)",
+            "  /clawguard_feed     Toggle the real-time alert feed on/off",
+            "",
+            "CLI commands (run on the host):",
+            "  clawguard               First run: setup wizard + scan; after: status view",
+            "  clawguard scan           Run a one-time security scan",
+            "  clawguard watch          Start continuous monitoring (required for Telegram alerts)",
+            "  clawguard audit          Show audit event log (config/skill/plugin changes)",
+            "  clawguard status         Show persisted security status",
+            "  clawguard alerts         Show alert history",
+            "  clawguard baseline approve   Approve current state as drift baseline",
+            "  clawguard notify         View/change notification settings",
+            "",
+            `Tip: Run \`clawguard watch\` with SSE enabled (port ${port}) to enable this Telegram integration.`,
+          ].join("\n"),
+        };
       },
     });
   },

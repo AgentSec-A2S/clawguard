@@ -274,16 +274,20 @@ impl WatchService {
         recorded_at_unix_ms: u64,
         drift_findings: &[Finding],
     ) -> Result<Vec<String>, WatchServiceError> {
-        let unresolved_finding_ids: BTreeSet<_> = self
+        // Only suppress re-alerting while an identical drift is still OPEN.
+        // Acknowledged/resolved alerts must not block a fresh alert when the same
+        // drift reappears — otherwise acking an alert silently disables future
+        // detection of the same file change (UAT 2026-04-15).
+        let open_finding_ids: BTreeSet<_> = self
             .state
-            .list_unresolved_alerts()?
+            .list_open_alerts()?
             .into_iter()
             .map(|alert| alert.finding_id)
             .collect();
         let mut alerts_created = Vec::new();
 
         for finding in drift_findings {
-            if unresolved_finding_ids.contains(&finding.id) {
+            if open_finding_ids.contains(&finding.id) {
                 continue;
             }
 

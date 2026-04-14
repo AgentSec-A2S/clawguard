@@ -1,6 +1,6 @@
 {
   "name": "@clawguard/openclaw-plugin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "OpenClaw gateway plugin for ClawGuard security alerts",
   "type": "module",
   "main": "index.js",

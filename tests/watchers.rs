@@ -1288,7 +1288,7 @@ fn event_rescan_records_drift_alerts_and_debounces_burst_events() {
 }
 
 #[test]
-fn acknowledged_drift_alert_is_not_duplicated_on_next_rescan() {
+fn acknowledged_drift_alert_does_not_suppress_re_alerting_on_next_rescan() {
     let temp_dir = tempdir().expect("temp dir should be created");
     let home_dir = temp_dir.path();
     let state_dir = home_dir.join(".openclaw");
@@ -1405,7 +1405,11 @@ fn acknowledged_drift_alert_is_not_duplicated_on_next_rescan() {
         .update_alert_status(&alert_id, AlertStatus::Acknowledged)
         .expect("acknowledge should succeed");
 
-    // Second rescan should NOT duplicate the acknowledged alert
+    // Second rescan: drift is still present and the prior alert was acked.
+    // The user has SEEN the alert and moved on, so a fresh detection of the
+    // same drift MUST produce a new OPEN alert — otherwise acking silently
+    // disables future re-alerting for the same file (UAT 2026-04-15, BUG #2).
+    // Only still-OPEN alerts are allowed to suppress re-alerting.
     let _second = service
         .handle_event(WatchEvent::new(canonical_config, 1_763_900_006_500))
         .expect("second rescan should succeed");
@@ -1415,13 +1419,17 @@ fn acknowledged_drift_alert_is_not_duplicated_on_next_rescan() {
         .expect("should read alerts after second rescan");
     assert_eq!(
         all_alerts.len(),
-        1,
-        "acknowledged alert should not be duplicated on next rescan"
+        2,
+        "acked drift must not suppress re-alerting; expected 1 acked + 1 new open"
     );
-    assert_eq!(
-        all_alerts[0].status,
-        AlertStatus::Acknowledged,
-        "alert should remain acknowledged"
+    let statuses: Vec<AlertStatus> = all_alerts.iter().map(|a| a.status.clone()).collect();
+    assert!(
+        statuses.contains(&AlertStatus::Acknowledged),
+        "original alert should remain acknowledged; got {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&AlertStatus::Open),
+        "fresh drift should produce a new open alert; got {statuses:?}"
     );
 }
 

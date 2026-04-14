@@ -1,7 +1,7 @@
 {
   "id": "clawguard",
   "name": "ClawGuard Security Alerts",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Forward ClawGuard security alerts to messaging channels via SSE stream",
   "author": "AgentSec-A2S",
   "homepage": "https://github.com/AgentSec-A2S/clawguard",

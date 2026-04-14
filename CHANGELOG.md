@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — UAT 2026-04-15
+
+- **`audit --json` contract** — now emits a single valid JSON array (was: empty stdout on empty result set; NDJSON on populated set). Fixes `jq` pipelines and matches every other `--json` subcommand.
+- **Drift alert dedup regression** — `append_new_drift_alerts` now suppresses only while an identical drift is still **open**. Previously used `list_unresolved_alerts()` which also matched acknowledged alerts, so acking an alert silently disabled all future re-alerts for the same file. (`watch.rs:272`)
+- **OpenClaw gateway plugin `register()` TypeError** — switched `registerCommand` calls from `id:` → `name:` and wrapped handler returns in `{ text: ... }` to match the current OpenClaw plugin SDK. Previously the framework called `command.name.trim()` on `undefined` and aborted plugin registration, leaving slash commands `/clawguard_*` unregistered (SSE service still ran because `registerService` came first). (`openclaw-plugin/index.js` → `@clawguard/openclaw-plugin@1.0.1`)
+
+### Tests
+
+- New `tests/audit_cli.rs`: 2 contract tests pin `audit --json` output shape for both empty and populated DBs.
+- `tests/watchers.rs::acknowledged_drift_alert_does_not_suppress_re_alerting_on_next_rescan` (renamed) now pins the correct behavior — acking no longer gags re-alerting.
+
 ## [1.2.0-beta.1] - 2026-04-14
 
 ### V1.1 — Config Audit Detectors (3 sprints)

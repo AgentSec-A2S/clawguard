@@ -1007,9 +1007,13 @@ fn run_audit_command(cli: &Cli, args: &AuditArgs) -> ExitCode {
     };
 
     if cli.json {
-        for event in &events {
-            if let Ok(json) = serde_json::to_string(event) {
-                println!("{json}");
+        // Emit a single JSON array so `clawguard audit --json | jq` works and
+        // empty results produce `[]` rather than an empty stdout (UAT 2026-04-15).
+        match serde_json::to_string(&events) {
+            Ok(json) => println!("{json}"),
+            Err(error) => {
+                eprintln!("Error: failed to serialize audit events: {error}");
+                return ExitCode::FAILURE;
             }
         }
     } else if events.is_empty() {
