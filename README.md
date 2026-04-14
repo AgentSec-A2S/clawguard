@@ -52,6 +52,12 @@ ClawGuard exists to give you an action-oriented answer:
 - MCP scanning for suspicious launchers, unpinned package references, and overly broad directories
 - Secrets and env scanning for literal secrets and private-key material
 - Advisory/version matching when readable version evidence exists, including a bounded fallback to common source-layout manifests such as `packages/core/package.json`
+- Skill TOFU (trust-on-first-use) provenance tracking:
+  - git remote URL and HEAD SHA extraction from `.git/config` and `.git/HEAD` (no subprocess, handles worktrees and submodules via `gitdir:` indirection)
+  - boundary-guarded `.git` resolution prevents escape from scan root
+  - 3 provenance findings: `skill-no-provenance` (Info), `skill-unapproved-change` (Medium), `skill-remote-redirect` (High)
+  - provenance checks run in both `clawguard scan` and `clawguard watch` pipelines
+  - `baseline approve` captures git provenance alongside file hashes for future drift comparison
 - Explicit baseline approval for the current runtime state
 - Foreground watch loop that records cold-boot snapshots and drift-triggered rescans into ClawGuard state
 - Watch-driven notification routing for persisted alerts:
@@ -145,6 +151,14 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - detects prompt injection markers: "ignore previous instructions", "system override", "forget everything", etc. (Critical)
   - detects obfuscated content: ≥10 hex (`\x`) or unicode (`\u`) escape sequences per line (Medium)
   - workspace discovery cannot be suppressed by decoy files in the parent directory
+- `Skill TOFU provenance`
+  - trust-on-first-use model: first `baseline approve` captures skill file hashes + git remote URL + HEAD SHA as the trusted state
+  - skills with no baseline at all: `skill-no-provenance` (Info, ASI06) — awareness only, no action needed until user approves
+  - skill hash changed without `baseline approve`: `skill-unapproved-change` (Medium, ASI06) — possible unauthorized modification
+  - skill git remote URL differs from approved baseline: `skill-remote-redirect` (High, ASI06) — supply chain redirect, skill source changed to a different repository
+  - provenance checks run automatically in both `clawguard scan` and `clawguard watch` pipelines
+  - git metadata extracted without spawning subprocesses (parses `.git/config` and `.git/HEAD` directly)
+  - handles git worktrees and submodules via `.git` file `gitdir:` indirection, with scan boundary enforcement
 - `Advisory matching`
   - matches local OpenClaw version evidence against the bundled advisory feed when version evidence is available
 - `Baseline approval`
