@@ -1,5 +1,59 @@
 # Changelog
 
+## [1.2.0-beta.1] - 2026-04-14
+
+### V1.1 — Config Audit Detectors (3 sprints)
+
+- 7 new config audit detectors: `hook-allows-request-session-key`, `hook-allows-unsafe-external-content`, `hook-transform-external-module`, `exec-host-node`, `sandbox-disabled`, nested `open-dm-policy`
+- 2 new detectors: `acp-approve-all` (ACPX auto-approve), per-agent `exec-host-node`
+- 2 new detectors: `gateway-node-dangerous-command`, `tool-profile-escalation`
+- OWASP ASI Top 10 mapping on every finding (`owasp_asi` field, ASI02–ASI10)
+
+### V1.2 — Hook Integrity + Supply Chain Trust (5 sprints)
+
+**Sprint 1: Sandbox bind-mount + plugin config drift**
+- `sandbox-bind-symlink`, `sandbox-bind-temp-dir`: TOCTOU + temp dir risks
+- `sandbox-dangerous-reserved-targets`, `sandbox-dangerous-external-sources`: dangerous docker booleans
+- `plugin-not-in-allowlist`, `plugin-in-denylist`: config drift detection
+- Per-agent effective sandbox scope resolution
+
+**Sprint 2: Audit log infrastructure**
+- Passive ingestion of `config-audit.jsonl` (ISO-8601 timestamps, log rotation safe)
+- Skill SHA-256 hash tracking, plugin catalog change detection
+- `clawguard audit [--category X] [--since 1h] [--limit N] [--json]`
+- Wired into watch cycle for continuous event capture
+
+**Sprint 3: Hook scanning + bootstrap file integrity**
+- Hook handler scanning: shell-exec, network-exfil, identity/config mutation detection
+- Bootstrap file integrity: encoded payloads, shell injection, prompt injection, obfuscation
+- 9 bootstrap files across `~/.openclaw/agents/*/agent/`
+- Block comment tracking prevents detection bypass
+
+**Sprint 4: Stats command + bootstrap audit tracking**
+- `clawguard stats [--since 7d] [--json]`: scan history, finding trends, alert resolution rates
+- Bootstrap file change tracking via SHA-256 snapshot diffing with symlink protection
+
+**Sprint 5: Skill TOFU provenance + posture scoring**
+- Skill TOFU (trust-on-first-use) provenance: git remote URL + HEAD SHA tracking
+- 3 provenance findings: `skill-no-provenance` (Info), `skill-unapproved-change` (Medium), `skill-remote-redirect` (High)
+- Git metadata extraction without subprocess, worktree/submodule support with boundary guard
+- `clawguard posture [--json]`: weighted permission surface score (33 finding-specific weights)
+- 5 score bands: Clean, Low, Moderate, Elevated, Critical
+- Read-only design: computes trend from latest persisted snapshot without writing authoritative state
+- 3 cargo-fuzz targets for git parsers
+
+**OpenClaw upstream sync (7,212 commits analyzed)**
+- `exec-approvals-missing`: detect absent exec-approvals.json (upstream defaults changed to fail-open)
+- `groupPolicy: "open"` detection alongside `dmPolicy`
+- `busybox`/`toybox` added as suspicious MCP launchers
+- `OPENCLAW_AGENT_DIR` env var support for bootstrap scanning
+- Config-driven extra scan dirs from `skills.load.extraDirs` and `hooks.internal.load.extraDirs`
+
+### Test Suite
+
+- 298+ tests across all suites (114 openclaw_audit, 19 audit, 8 posture, 7 provenance, 5 stats)
+- 3 cargo-fuzz targets (git config, git HEAD, ISO timestamp parsers)
+
 ## [1.0.0-beta.2] - 2026-03-31
 
 ### Beta 2
