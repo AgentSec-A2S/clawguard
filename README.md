@@ -163,6 +163,11 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - provenance checks run automatically in both `clawguard scan` and `clawguard watch` pipelines
   - git metadata extracted without spawning subprocesses (parses `.git/config` and `.git/HEAD` directly)
   - handles git worktrees and submodules via `.git` file `gitdir:` indirection, with scan boundary enforcement
+- Permission posture scoring via `clawguard posture`:
+  - weighted sum across 33 specific finding kinds with per-kind weights (1–5) and severity-based fallback
+  - score bands: Clean → Low → Moderate → Elevated → Critical
+  - trend direction (improved / degraded / unchanged) vs previous snapshot
+  - posture score persisted to SQLite; `--json` output for integration with CI/dashboards
 - `Advisory matching`
   - matches local OpenClaw version evidence against the bundled advisory feed when version evidence is available
 - `Baseline approval`
@@ -178,6 +183,13 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - aggregates scan history, finding trends, alert resolution rates, baseline counts, and audit event breakdowns
   - supports `--since` timeframe filter (1h, 7d, 30d) and `--json` machine-readable output
   - `clawguard stats [--since 7d] [--json]`
+- `Permission posture scoring`
+  - weighted sum across 33 specific finding kinds — each kind has an individually tuned weight (1–5)
+  - severity-based fallback (Critical=5, High=3, Medium=2, Low=1, Info=0) for any unmapped finding kind
+  - score bands: Clean (0), Low (1–10), Moderate (11–25), Elevated (26–50), Critical (51+)
+  - trend comparison against previous snapshot score (improved / degraded / unchanged)
+  - posture score stored per snapshot in SQLite for long-term trend history
+  - `clawguard posture [--json]`
 - `Watch loop`
   - watches protected files and skill roots, re-scans on change, records snapshots, appends drift alerts, and delivers notifications from persisted alert state
   - runs passive audit ingestion after each scan cycle for continuous event capture
@@ -312,6 +324,11 @@ cargo build --release
   - shows aggregate scan and security statistics over time
   - `--since 1h|7d|30d` filters statistics to a time window
   - `--json` emits machine-readable JSON with trend data
+- `clawguard posture`
+  - computes a weighted permission surface score from the current scan findings
+  - score bands: Clean (0), Low (1–10), Moderate (11–25), Elevated (26–50), Critical (51+)
+  - shows a per-kind breakdown table (kind × count × weight = subtotal) and trend vs previous snapshot
+  - `clawguard posture --json` emits machine-readable JSON with score, band, breakdown array, and trend
 - `clawguard --json` or `clawguard scan --json`
   - emits machine-readable findings JSON derived from the shared scan result model
 - `clawguard --no-interactive` or `clawguard scan --no-interactive`
@@ -338,6 +355,8 @@ clawguard notify off
 clawguard watch --iterations 1
 clawguard scan --json
 clawguard status --json
+clawguard posture
+clawguard posture --json
 clawguard scan --no-interactive --json
 ```
 
