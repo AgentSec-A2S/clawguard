@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0-beta.2] - 2026-04-15
 
 ### Fixed — UAT 2026-04-15
 
