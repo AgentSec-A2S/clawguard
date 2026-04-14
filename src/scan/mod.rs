@@ -5,6 +5,7 @@ pub mod finding;
 pub mod hooks;
 pub mod mcp;
 pub mod openclaw;
+pub mod posture;
 pub mod secrets;
 pub mod severity;
 pub mod skills;

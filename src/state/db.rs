@@ -146,17 +146,22 @@ impl StateStore {
         Ok(Some(snapshot))
     }
 
-    pub fn record_scan_snapshot(&mut self, snapshot: &ScanSnapshot) -> Result<(), StateStoreError> {
+    pub fn record_scan_snapshot(
+        &mut self,
+        snapshot: &ScanSnapshot,
+        posture_score: Option<f64>,
+    ) -> Result<(), StateStoreError> {
         let (snapshot_json, summary_json) = serialize_snapshot(snapshot)?;
 
         self.run_write_with_retry(|conn| {
             conn.execute(
-                "INSERT INTO scan_snapshots (recorded_at_unix_ms, summary_json, snapshot_json)
-                 VALUES (?1, ?2, ?3)",
+                "INSERT INTO scan_snapshots (recorded_at_unix_ms, summary_json, snapshot_json, posture_score)
+                 VALUES (?1, ?2, ?3, ?4)",
                 (
                     snapshot.recorded_at_unix_ms as i64,
                     &summary_json,
                     &snapshot_json,
+                    posture_score,
                 ),
             )?;
 
@@ -191,6 +196,7 @@ impl StateStore {
     pub fn record_scan_snapshot_and_replace_current_findings(
         &mut self,
         snapshot: &ScanSnapshot,
+        posture_score: Option<f64>,
     ) -> Result<(), StateStoreError> {
         let (snapshot_json, summary_json) = serialize_snapshot(snapshot)?;
         let serialized_findings = serialize_current_findings(&snapshot.findings)?;
@@ -198,12 +204,13 @@ impl StateStore {
         self.run_write_with_retry(|conn| {
             let transaction = conn.unchecked_transaction()?;
             transaction.execute(
-                "INSERT INTO scan_snapshots (recorded_at_unix_ms, summary_json, snapshot_json)
-                 VALUES (?1, ?2, ?3)",
+                "INSERT INTO scan_snapshots (recorded_at_unix_ms, summary_json, snapshot_json, posture_score)
+                 VALUES (?1, ?2, ?3, ?4)",
                 (
                     snapshot.recorded_at_unix_ms as i64,
                     &summary_json,
                     &snapshot_json,
+                    posture_score,
                 ),
             )?;
             transaction.execute("DELETE FROM current_findings", [])?;
@@ -895,6 +902,21 @@ impl StateStore {
         Ok(row)
     }
 
+    /// Returns the most recent posture score before the current scan, if any.
+    pub fn previous_posture_score(&self) -> Result<Option<f64>, StateStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT posture_score FROM scan_snapshots
+             WHERE posture_score IS NOT NULL
+             ORDER BY recorded_at_unix_ms DESC, id DESC
+             LIMIT 1 OFFSET 1",
+        )?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => Ok(row.get(0)?),
+            None => Ok(None),
+        }
+    }
+
     pub fn earliest_scan_snapshot(
         &self,
         since_unix_ms: Option<u64>,
@@ -1195,6 +1217,7 @@ fn bootstrap_schema(conn: &Connection) -> Result<(), StateStoreError> {
     )?;
 
     migrate_baselines_provenance(conn)?;
+    migrate_snapshots_posture_score(conn)?;
 
     Ok(())
 }
@@ -1221,6 +1244,25 @@ fn migrate_baselines_provenance(conn: &Connection) -> Result<(), StateStoreError
     }
     if !has_git_head_sha {
         conn.execute_batch("ALTER TABLE baselines ADD COLUMN git_head_sha TEXT")?;
+    }
+
+    Ok(())
+}
+
+/// Idempotent migration: add posture_score column to scan_snapshots table.
+fn migrate_snapshots_posture_score(conn: &Connection) -> Result<(), StateStoreError> {
+    let mut has_posture_score = false;
+
+    let mut stmt = conn.prepare("PRAGMA table_info(scan_snapshots)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row? == "posture_score" {
+            has_posture_score = true;
+        }
+    }
+
+    if !has_posture_score {
+        conn.execute_batch("ALTER TABLE scan_snapshots ADD COLUMN posture_score REAL")?;
     }
 
     Ok(())

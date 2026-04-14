@@ -246,7 +246,7 @@ impl WatchService {
         };
 
         self.state
-            .record_scan_snapshot_and_replace_current_findings(&snapshot)?;
+            .record_scan_snapshot_and_replace_current_findings(&snapshot, None)?;
         let alerts_created = self.append_new_drift_alerts(recorded_at_unix_ms, &drift_findings)?;
 
         // Run passive audit ingestion for discovered runtimes

@@ -87,7 +87,7 @@ fn stats_basic_output() {
     // Insert 3 snapshots
     for _ in 0..3 {
         let snap = make_snapshot(2, Some(Severity::High));
-        store.record_scan_snapshot(&snap).unwrap();
+        store.record_scan_snapshot(&snap, None).unwrap();
     }
 
     // Insert current findings
@@ -120,11 +120,11 @@ fn stats_since_filter() {
         },
         findings: vec![],
     };
-    store.record_scan_snapshot(&old_snap).unwrap();
+    store.record_scan_snapshot(&old_snap, None).unwrap();
 
     // Insert recent snapshot
     let recent_snap = make_snapshot(2, Some(Severity::Medium));
-    store.record_scan_snapshot(&recent_snap).unwrap();
+    store.record_scan_snapshot(&recent_snap, None).unwrap();
 
     // Filter since recent time — should count only 1
     let since = now_ms() - 5_000; // 5 seconds ago
@@ -141,7 +141,7 @@ fn stats_json_output_structure() {
     let (_dir, mut store) = setup_state();
 
     let snap = make_snapshot(3, Some(Severity::High));
-    store.record_scan_snapshot(&snap).unwrap();
+    store.record_scan_snapshot(&snap, None).unwrap();
 
     // Verify alert stats with mixed statuses
     let alert1 = AlertRecord {
@@ -182,11 +182,11 @@ fn stats_trend_improved() {
         },
         findings: vec![],
     };
-    store.record_scan_snapshot(&early).unwrap();
+    store.record_scan_snapshot(&early, None).unwrap();
 
     // Latest snapshot: 3 findings
     let latest = make_snapshot(3, Some(Severity::Medium));
-    store.record_scan_snapshot(&latest).unwrap();
+    store.record_scan_snapshot(&latest, None).unwrap();
 
     // Replace current findings with 3
     let findings = vec![

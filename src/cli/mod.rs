@@ -90,6 +90,8 @@ enum Commands {
     Audit(AuditArgs),
     /// Show scan and security statistics.
     Stats(StatsArgs),
+    /// Show the permission posture score for the current OpenClaw runtime.
+    Posture,
 }
 
 #[derive(Debug, Subcommand)]
@@ -319,6 +321,7 @@ pub fn run() -> ExitCode {
         Some(Commands::Watch(ref args)) => run_watch_command(&cli, args),
         Some(Commands::Audit(ref args)) => run_audit_command(&cli, args),
         Some(Commands::Stats(ref args)) => run_stats_command(&cli, args),
+        Some(Commands::Posture) => run_posture_command(&cli),
         None => run_root_command(&cli),
     }
 }
@@ -1241,6 +1244,120 @@ fn run_stats_command(cli: &Cli, args: &StatsArgs) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn run_posture_command(cli: &Cli) -> ExitCode {
+    use crate::scan::posture::compute_posture;
+
+    let discovery = discover_from_builtin_presets(&DiscoveryOptions::default());
+    let config = match load_saved_config_for_operational_command("posture") {
+        Ok(config) => config,
+        Err(code) => return code,
+    };
+    if !runtime_available_for_operational_command(&discovery, "posture") {
+        return ExitCode::FAILURE;
+    }
+    let evidence = collect_scan_evidence(&config, &discovery);
+    let report = compute_posture(evidence.result.findings());
+
+    // Best-effort: store posture score in snapshot if DB is available
+    let previous_score = if let Ok(mut open_result) = open_state_store_for_home(&resolve_home_dir())
+    {
+        let snapshot = crate::state::model::ScanSnapshot {
+            recorded_at_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            summary: evidence.result.summary(),
+            findings: evidence.result.findings().to_vec(),
+        };
+        let _ = open_result
+            .store
+            .record_scan_snapshot_and_replace_current_findings(&snapshot, Some(report.score));
+        open_result.store.previous_posture_score().ok().flatten()
+    } else {
+        None
+    };
+
+    if cli.json {
+        render_posture_json(&report, previous_score);
+    } else {
+        render_posture_human(&report, previous_score);
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn render_posture_human(report: &crate::scan::posture::PostureReport, previous: Option<f64>) {
+    println!(
+        "\nPermission Posture Score: {:.0} ({})\n",
+        report.score, report.band
+    );
+
+    if report.breakdown.is_empty() {
+        println!("  No findings — minimal attack surface.\n");
+    } else {
+        for item in &report.breakdown {
+            println!(
+                "  {:<40} x{:<3} = {:.0}",
+                item.kind, item.count, item.subtotal
+            );
+        }
+        println!("  {}", "─".repeat(50));
+        println!("  {:<40}       {:.0}\n", "Total", report.score);
+    }
+
+    if let Some(prev) = previous {
+        let direction = if report.score > prev {
+            "↑ degraded"
+        } else if report.score < prev {
+            "↓ improved"
+        } else {
+            "→ stable"
+        };
+        println!("Trend: {} from {:.0} (previous scan)\n", direction, prev);
+    }
+}
+
+fn render_posture_json(report: &crate::scan::posture::PostureReport, previous: Option<f64>) {
+    #[derive(serde::Serialize)]
+    struct PostureOutput<'a> {
+        posture_score: f64,
+        band: &'a crate::scan::posture::PostureBand,
+        trend: Option<PostureTrend>,
+        breakdown: &'a [crate::scan::posture::PostureContribution],
+        finding_count: usize,
+    }
+    #[derive(serde::Serialize)]
+    struct PostureTrend {
+        previous_score: f64,
+        direction: String,
+    }
+
+    let trend = previous.map(|prev| PostureTrend {
+        previous_score: prev,
+        direction: if report.score > prev {
+            "degraded"
+        } else if report.score < prev {
+            "improved"
+        } else {
+            "stable"
+        }
+        .to_string(),
+    });
+
+    let output = PostureOutput {
+        posture_score: report.score,
+        band: &report.band,
+        trend,
+        breakdown: &report.breakdown,
+        finding_count: report.finding_count,
+    };
+
+    match serde_json::to_string_pretty(&output) {
+        Ok(json) => println!("{json}"),
+        Err(err) => eprintln!("failed to serialize posture report: {err}"),
+    }
 }
 
 fn parse_since_duration(s: &str) -> Option<u64> {

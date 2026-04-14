@@ -65,7 +65,7 @@ fn scan_snapshot_round_trips_with_summary_and_findings() {
     let snapshot = sample_snapshot();
 
     store
-        .record_scan_snapshot(&snapshot)
+        .record_scan_snapshot(&snapshot, None)
         .expect("snapshot should persist");
 
     assert_eq!(store.latest_scan_snapshot().unwrap(), Some(snapshot));
@@ -86,10 +86,10 @@ fn latest_scan_snapshot_returns_most_recent_when_multiple_exist() {
     newer.summary.total_findings = 1;
 
     store
-        .record_scan_snapshot(&older)
+        .record_scan_snapshot(&older, None)
         .expect("older snapshot should persist");
     store
-        .record_scan_snapshot(&newer)
+        .record_scan_snapshot(&newer, None)
         .expect("newer snapshot should persist");
 
     assert_eq!(store.latest_scan_snapshot().unwrap(), Some(newer));
@@ -105,7 +105,7 @@ fn record_scan_snapshot_and_replace_current_findings_updates_both_views() {
     let snapshot = sample_snapshot();
 
     store
-        .record_scan_snapshot_and_replace_current_findings(&snapshot)
+        .record_scan_snapshot_and_replace_current_findings(&snapshot, None)
         .expect("combined snapshot/current-finding write should succeed");
 
     assert_eq!(
@@ -837,7 +837,7 @@ fn snapshot_round_trip_preserves_special_characters() {
     };
 
     store
-        .record_scan_snapshot(&snapshot)
+        .record_scan_snapshot(&snapshot, None)
         .expect("snapshot should persist");
 
     assert_eq!(store.latest_scan_snapshot().unwrap(), Some(snapshot));

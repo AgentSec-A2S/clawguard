@@ -119,19 +119,22 @@ fn record_latest_snapshot(home_dir: &Path, warning: Option<&str>) {
         findings,
     };
     store
-        .record_scan_snapshot(&snapshot)
+        .record_scan_snapshot(&snapshot, None)
         .expect("snapshot should persist");
 
     if let Some(message) = warning {
         store
-            .record_scan_snapshot_and_replace_current_findings(&ScanSnapshot {
-                recorded_at_unix_ms: 1_764_100_000_001,
-                summary: ScanSummary {
-                    total_findings: 0,
-                    highest_severity: None,
+            .record_scan_snapshot_and_replace_current_findings(
+                &ScanSnapshot {
+                    recorded_at_unix_ms: 1_764_100_000_001,
+                    summary: ScanSummary {
+                        total_findings: 0,
+                        highest_severity: None,
+                    },
+                    findings: vec![],
                 },
-                findings: vec![],
-            })
+                None,
+            )
             .expect("snapshot refresh should succeed");
         let _ = StateWarning {
             kind: StateWarningKind::DatabaseCorruptRecreated,
