@@ -166,7 +166,7 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
 - Permission posture scoring via `clawguard posture`:
   - weighted sum across 33 specific finding kinds with per-kind weights (1–5) and severity-based fallback
   - score bands: Clean → Low → Moderate → Elevated → Critical
-  - trend direction (improved / degraded / unchanged) vs previous snapshot
+  - trend direction (improved / degraded / stable) vs previous snapshot
   - posture score persisted to SQLite; `--json` output for integration with CI/dashboards
 - `Advisory matching`
   - matches local OpenClaw version evidence against the bundled advisory feed when version evidence is available
@@ -187,7 +187,7 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - weighted sum across 33 specific finding kinds — each kind has an individually tuned weight (1–5)
   - severity-based fallback (Critical=5, High=3, Medium=2, Low=1, Info=0) for any unmapped finding kind
   - score bands: Clean (0), Low (1–10), Moderate (11–25), Elevated (26–50), Critical (51+)
-  - trend comparison against previous snapshot score (improved / degraded / unchanged)
+  - trend comparison against previous snapshot score (improved / degraded / stable)
   - posture score stored per snapshot in SQLite for long-term trend history
   - `clawguard posture [--json]`
 - `Watch loop`

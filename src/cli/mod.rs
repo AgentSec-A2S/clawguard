@@ -1260,24 +1260,18 @@ fn run_posture_command(cli: &Cli) -> ExitCode {
     let evidence = collect_scan_evidence(&config, &discovery);
     let report = compute_posture(evidence.result.findings());
 
-    // Best-effort: store posture score in snapshot if DB is available
-    let previous_score = if let Ok(mut open_result) = open_state_store_for_home(&resolve_home_dir())
-    {
-        let snapshot = crate::state::model::ScanSnapshot {
-            recorded_at_unix_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0),
-            summary: evidence.result.summary(),
-            findings: evidence.result.findings().to_vec(),
-        };
-        let _ = open_result
-            .store
-            .record_scan_snapshot_and_replace_current_findings(&snapshot, Some(report.score));
-        open_result.store.previous_posture_score().ok().flatten()
-    } else {
-        None
-    };
+    // Read-only: compute trend from the latest persisted snapshot's findings
+    // without writing to the authoritative scan tables (Codex review finding #1/#2).
+    let previous_score = open_state_store_for_home(&resolve_home_dir())
+        .ok()
+        .and_then(|open_result| {
+            open_result
+                .store
+                .latest_scan_snapshot()
+                .ok()
+                .flatten()
+                .map(|snap| compute_posture(&snap.findings).score)
+        });
 
     if cli.json {
         render_posture_json(&report, previous_score);
