@@ -78,6 +78,8 @@ ClawGuard exists to give you an action-oriented answer:
   - Connects to ClawGuard SSE stream with automatic reconnection
   - Forwards alert and daily digest events to any configured OpenClaw channel
   - Slash commands: `/clawguard_help`, `/clawguard_feed`, `/clawguard_status`, `/clawguard_alerts`
+- Config-driven enrichment: reads `openclaw.json` to discover `skills.load.extraDirs` and `hooks.internal.load.extraDirs`, scanning those directories automatically alongside the default roots
+- `OPENCLAW_AGENT_DIR` env var override: if set, ClawGuard scans that directory for bootstrap files in addition to the default `~/.openclaw/agents`
 - Conservative scope: no broad auto-remediation, no background trust UI, no hidden mutation of OpenClaw state
 
 ## What It Checks Today
@@ -94,7 +96,7 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
 - `Skills scan`
   - looks for shell, network, and local-install behaviors that deserve human review
 - `MCP scan`
-  - looks for suspicious auto-install launchers, unpinned packages, and wide filesystem reach
+  - looks for suspicious auto-install launchers (including `busybox` and `toybox` multi-call binaries), unpinned packages, and wide filesystem reach
 - `Secrets and env scan`
   - looks for hardcoded secrets, token-like literals, and PEM / SSH private-key material
 - `Device auth and plugin path audit`
@@ -110,6 +112,8 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - flags `tools.exec.host=node` — unsandboxed host execution, global and per-agent (Medium)
   - flags `agents.defaults.sandbox.mode=off` or per-agent sandbox disabled (Medium)
   - flags `channels.*.accounts.*.dmPolicy=open` at nested account level (Medium)
+  - flags `channels.*.groupPolicy=open` and `channels.*.accounts.*.groupPolicy=open` — untrusted group messages reaching exec paths (Medium)
+  - flags missing `exec-approvals.json` — upstream default changed from `security=deny` to `security=full`; absence now means full host exec with no prompts (Medium, ASI02)
 - `ACP plugin posture`
   - flags `plugins.entries.acpx.config.permissionMode=approve-all` — auto-approves all tool calls including exec, spawn, shell, and filesystem writes (High)
   - skips disabled plugins to avoid false positives on stale config remnants
