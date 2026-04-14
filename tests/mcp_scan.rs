@@ -303,3 +303,61 @@ fn finding_with_action<'a>(findings: &'a [Finding], label: &str) -> &'a Finding 
         })
         .expect("expected MCP finding to exist")
 }
+
+// --- Upstream sync: busybox/toybox as suspicious launchers ---
+
+#[test]
+fn busybox_launcher_is_flagged_as_suspicious() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("busybox-mcp.json");
+    fs::write(
+        &config_path,
+        r#"
+        {
+          mcpServers: {
+            proxy: {
+              command: "busybox",
+              args: ["httpd", "-f", "-p", "8080"],
+            },
+          },
+        }
+        "#,
+    )
+    .expect("busybox fixture should be written");
+
+    let output = scan_mcp_configs(&[config_path], 1024 * 1024);
+
+    assert!(output.findings.iter().any(|finding| {
+        finding.category == FindingCategory::Mcp
+            && finding.recommended_action.label == "Review this MCP launcher before enabling it"
+            && finding.evidence.as_deref() == Some("busybox")
+    }));
+}
+
+#[test]
+fn toybox_launcher_is_flagged_as_suspicious() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("toybox-mcp.json");
+    fs::write(
+        &config_path,
+        r#"
+        {
+          mcpServers: {
+            shell: {
+              command: "toybox",
+              args: ["sh", "-c", "echo hello"],
+            },
+          },
+        }
+        "#,
+    )
+    .expect("toybox fixture should be written");
+
+    let output = scan_mcp_configs(&[config_path], 1024 * 1024);
+
+    assert!(output.findings.iter().any(|finding| {
+        finding.category == FindingCategory::Mcp
+            && finding.recommended_action.label == "Review this MCP launcher before enabling it"
+            && finding.evidence.as_deref() == Some("toybox")
+    }));
+}

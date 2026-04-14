@@ -83,6 +83,8 @@ pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
         | "gateway-node-dangerous-command"
         | "tool-profile-escalation"
         | "hook-shell-exec" => Some("ASI02".into()),
+        // ASI02: Excessive Agency (missing approval guardrails)
+        "exec-approvals-missing" => Some("ASI02".into()),
         // ASI03: Privilege Escalation
         "exec-security-full"
         | "exec-ask-off"

@@ -27,7 +27,7 @@ pub fn scan_openclaw_state(paths: &[PathBuf], max_file_size_bytes: u64) -> OpenC
     let mut sorted_paths = paths.to_vec();
     sorted_paths.sort();
 
-    for path in sorted_paths {
+    for path in &sorted_paths {
         let Ok(metadata) = fs::metadata(&path) else {
             continue;
         };
@@ -67,6 +67,55 @@ pub fn scan_openclaw_state(paths: &[PathBuf], max_file_size_bytes: u64) -> OpenC
             }
             FileKind::AuthProfiles | FileKind::Other => {}
         }
+    }
+
+    // Detect missing exec-approvals.json.
+    // Older OpenClaw versions default to security=deny (safe). Newer versions (post-2026.4)
+    // changed to security=full, ask=off (fail-open). Since we cannot detect the user's
+    // OpenClaw version, emit as Medium — explicit config is always better than relying on
+    // defaults that may change across upgrades.
+    let has_openclaw_config = sorted_paths.iter().any(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n == "openclaw.json")
+            .unwrap_or(false)
+            && p.is_file()
+    });
+    let has_exec_approvals = sorted_paths.iter().any(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n == "exec-approvals.json")
+            .unwrap_or(false)
+            && p.is_file()
+    });
+    if has_openclaw_config && !has_exec_approvals {
+        let expected_path = sorted_paths
+            .first()
+            .and_then(|p| p.parent())
+            .map(|dir| dir.join("exec-approvals.json"))
+            .map(|p| resolved_path_string(&p))
+            .unwrap_or_else(|| "~/.openclaw/exec-approvals.json".to_string());
+        findings.push(Finding {
+            id: format!("openclaw-config:exec-approvals-missing:{expected_path}"),
+            detector_id: "openclaw-config".to_string(),
+            severity: Severity::Medium,
+            category: FindingCategory::Config,
+            runtime_confidence: RuntimeConfidence::ActiveRuntime,
+            path: expected_path,
+            line: None,
+            evidence: Some(
+                "No exec-approvals.json found. Newer OpenClaw versions default to security=full, ask=off (fail-open)."
+                    .to_string(),
+            ),
+            plain_english_explanation: "No explicit exec-approvals.json was found. Older OpenClaw versions default to security=deny (safe), but newer versions changed defaults to full host execution with no approval prompts. Create an explicit exec-approvals.json to protect against unsafe defaults across OpenClaw upgrades.".to_string(),
+            recommended_action: RecommendedAction {
+                label: "Create exec-approvals.json with explicit security=deny to pin safe defaults".to_string(),
+                command_hint: None,
+            },
+            fixability: Fixability::Manual,
+            fix: None,
+            owasp_asi: owasp_asi_for_kind("exec-approvals-missing"),
+        });
     }
 
     findings.sort_by(|left, right| {
@@ -287,7 +336,22 @@ fn findings_for_channel_policies(
             }
         }
 
-        // Walk nested accounts.*.dmPolicy
+        // Check top-level groupPolicy
+        if let Some(group_policy) = string_field(channel, "groupPolicy").map(normalize_lower) {
+            if group_policy == "open" {
+                findings.push(build_config_finding(
+                    path,
+                    "open-dm-policy",
+                    &format!("channels.{channel_name}"),
+                    inbound_dm_severity(global_host),
+                    Some(format!("channels.{channel_name}.groupPolicy=open")),
+                    "This channel accepts group messages from anyone, which increases the chance that untrusted prompts can reach host-exec paths.",
+                    "Restrict inbound group exposure before accepting remote commands",
+                ));
+            }
+        }
+
+        // Walk nested accounts.*.dmPolicy and accounts.*.groupPolicy
         if let Some(accounts) = object_field(channel, "accounts") {
             let mut account_names: Vec<_> = accounts.keys().cloned().collect();
             account_names.sort();
@@ -295,21 +359,35 @@ fn findings_for_channel_policies(
                 let Some(acct) = accounts.get(&account_name).and_then(Value::as_object) else {
                     continue;
                 };
-                let Some(acct_dm) = string_field(acct, "dmPolicy").map(normalize_lower) else {
-                    continue;
-                };
-                if acct_dm == "open" {
-                    findings.push(build_config_finding(
-                        path,
-                        "open-dm-policy",
-                        &format!("channels.{channel_name}.accounts.{account_name}"),
-                        inbound_dm_severity(global_host),
-                        Some(format!(
-                            "channels.{channel_name}.accounts.{account_name}.dmPolicy=open"
-                        )),
-                        "This account accepts direct messages from anyone, which increases the chance that untrusted prompts can reach host-exec paths.",
-                        "Restrict inbound DM exposure before accepting remote commands",
-                    ));
+                if let Some(acct_dm) = string_field(acct, "dmPolicy").map(normalize_lower) {
+                    if acct_dm == "open" {
+                        findings.push(build_config_finding(
+                            path,
+                            "open-dm-policy",
+                            &format!("channels.{channel_name}.accounts.{account_name}"),
+                            inbound_dm_severity(global_host),
+                            Some(format!(
+                                "channels.{channel_name}.accounts.{account_name}.dmPolicy=open"
+                            )),
+                            "This account accepts direct messages from anyone, which increases the chance that untrusted prompts can reach host-exec paths.",
+                            "Restrict inbound DM exposure before accepting remote commands",
+                        ));
+                    }
+                }
+                if let Some(acct_gp) = string_field(acct, "groupPolicy").map(normalize_lower) {
+                    if acct_gp == "open" {
+                        findings.push(build_config_finding(
+                            path,
+                            "open-dm-policy",
+                            &format!("channels.{channel_name}.accounts.{account_name}"),
+                            inbound_dm_severity(global_host),
+                            Some(format!(
+                                "channels.{channel_name}.accounts.{account_name}.groupPolicy=open"
+                            )),
+                            "This account accepts group messages from anyone, which increases the chance that untrusted prompts can reach host-exec paths.",
+                            "Restrict inbound group exposure before accepting remote commands",
+                        ));
+                    }
                 }
             }
         }

@@ -286,6 +286,78 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
         }
     }
 
+    // --- Config-driven enrichment: discover extra skill/hook/agent dirs from openclaw.json ---
+    let extra_targets = extract_extra_targets_from_config(runtime);
+    for (domain, extra_path) in &extra_targets {
+        if !extra_path.is_dir() {
+            continue;
+        }
+        match domain {
+            ScanDomain::Skills => {
+                meta.skill_dir_count += 1;
+                let output =
+                    skills::scan_skill_dir(extra_path, config.max_file_size_bytes, excluded_dirs);
+                batches.push(output.findings);
+                for artifact in output.artifacts {
+                    let (git_remote_url, git_head_sha) = match &artifact.git_provenance {
+                        Some(prov) => (prov.remote_url.clone(), prov.head_sha.clone()),
+                        None => (None, None),
+                    };
+                    insert_artifact(
+                        &mut artifacts_by_path,
+                        BaselineArtifact {
+                            path: artifact.path,
+                            sha256: artifact.sha256,
+                            source_label: "skills".to_string(),
+                            category: FindingCategory::Skills,
+                            git_remote_url,
+                            git_head_sha,
+                        },
+                    );
+                }
+            }
+            ScanDomain::Hooks => {
+                let output =
+                    hooks::scan_hooks_dirs(&[extra_path.clone()], config.max_file_size_bytes);
+                batches.push(output.findings);
+                for artifact in output.artifacts {
+                    insert_artifact(
+                        &mut artifacts_by_path,
+                        BaselineArtifact {
+                            path: artifact.path,
+                            sha256: artifact.sha256,
+                            source_label: "hooks".to_string(),
+                            category: FindingCategory::Config,
+                            git_remote_url: None,
+                            git_head_sha: None,
+                        },
+                    );
+                }
+            }
+            ScanDomain::Bootstrap => {
+                let output = bootstrap::scan_bootstrap_dirs(
+                    &[extra_path.clone()],
+                    config.max_file_size_bytes,
+                );
+                batches.push(output.findings);
+                for artifact in output.artifacts {
+                    insert_artifact(
+                        &mut artifacts_by_path,
+                        BaselineArtifact {
+                            path: artifact.path,
+                            sha256: artifact.sha256,
+                            source_label: "bootstrap".to_string(),
+                            category: FindingCategory::Config,
+                            git_remote_url: None,
+                            git_head_sha: None,
+                        },
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
     let manifest_candidates = package_manifest_candidates(runtime);
     if manifest_candidates.iter().any(|path| path.is_file()) {
         batches.push(cve::scan_openclaw_advisories_from_feed(
@@ -353,4 +425,88 @@ fn package_manifest_candidates(runtime: &DetectedRuntime) -> Vec<PathBuf> {
         .iter()
         .map(|root| root.join("package.json"))
         .collect()
+}
+
+/// Extract additional scan targets from the OpenClaw config (openclaw.json):
+/// - `skills.load.extraDirs` → additional skill directories
+/// - `hooks.internal.load.extraDirs` → additional hook directories
+/// - `OPENCLAW_AGENT_DIR` env var → alternative agent base for bootstrap/auth scanning
+fn extract_extra_targets_from_config(runtime: &DetectedRuntime) -> Vec<(ScanDomain, PathBuf)> {
+    let mut extra = Vec::new();
+
+    // Check OPENCLAW_AGENT_DIR env var for alternative agent path
+    if let Ok(agent_dir) = std::env::var("OPENCLAW_AGENT_DIR") {
+        let agent_path = PathBuf::from(agent_dir);
+        if agent_path.is_dir() {
+            extra.push((ScanDomain::Bootstrap, agent_path));
+        }
+    }
+
+    // Read openclaw.json to extract extraDirs config
+    let config_path = runtime
+        .targets
+        .iter()
+        .find(|t| t.domain == ScanDomain::Config)
+        .and_then(|t| {
+            t.paths.iter().find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n == "openclaw.json")
+                    .unwrap_or(false)
+            })
+        });
+
+    let Some(config_path) = config_path else {
+        return extra;
+    };
+
+    let Ok(contents) = std::fs::read_to_string(config_path) else {
+        return extra;
+    };
+
+    let Ok(raw) = json5::from_str::<serde_json::Value>(&contents) else {
+        return extra;
+    };
+
+    // skills.load.extraDirs
+    if let Some(extra_dirs) = raw
+        .get("skills")
+        .and_then(|s| s.get("load"))
+        .and_then(|l| l.get("extraDirs"))
+        .and_then(|e| e.as_array())
+    {
+        for dir in extra_dirs {
+            if let Some(dir_str) = dir.as_str() {
+                let expanded = expand_tilde(dir_str);
+                extra.push((ScanDomain::Skills, expanded));
+            }
+        }
+    }
+
+    // hooks.internal.load.extraDirs
+    if let Some(extra_dirs) = raw
+        .get("hooks")
+        .and_then(|h| h.get("internal"))
+        .and_then(|i| i.get("load"))
+        .and_then(|l| l.get("extraDirs"))
+        .and_then(|e| e.as_array())
+    {
+        for dir in extra_dirs {
+            if let Some(dir_str) = dir.as_str() {
+                let expanded = expand_tilde(dir_str);
+                extra.push((ScanDomain::Hooks, expanded));
+            }
+        }
+    }
+
+    extra
+}
+
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
 }

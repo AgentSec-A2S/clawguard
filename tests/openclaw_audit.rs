@@ -233,11 +233,15 @@ fn malformed_openclaw_state_file_does_not_panic() {
     )
     .expect("malformed state file should be written");
     set_mode(&malformed_path, 0o600);
+    // Add exec-approvals.json so the missing-file detector does not fire
+    let exec_path = temp_dir.path().join("exec-approvals.json");
+    fs::write(&exec_path, "{}").expect("exec-approvals should be written");
+    set_mode(&exec_path, 0o600);
 
-    let output = scan_openclaw_state(&[malformed_path], 1024 * 1024);
+    let output = scan_openclaw_state(&[malformed_path, exec_path], 1024 * 1024);
 
     assert_eq!(output.findings.len(), 0);
-    assert_eq!(output.artifacts.len(), 1);
+    assert_eq!(output.artifacts.len(), 2);
 }
 
 #[test]
@@ -597,11 +601,15 @@ fn empty_openclaw_config_produces_no_findings() {
     let config_path = temp_dir.path().join("openclaw.json");
     fs::write(&config_path, "{}").expect("empty config should be written");
     set_mode(&config_path, 0o600);
+    // Add exec-approvals.json so the missing-file detector does not fire
+    let exec_path = temp_dir.path().join("exec-approvals.json");
+    fs::write(&exec_path, "{}").expect("exec-approvals should be written");
+    set_mode(&exec_path, 0o600);
 
-    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let output = scan_openclaw_state(&[config_path, exec_path], 1024 * 1024);
 
     assert_eq!(output.findings.len(), 0);
-    assert_eq!(output.artifacts.len(), 1);
+    assert_eq!(output.artifacts.len(), 2);
 }
 
 #[test]
@@ -2895,4 +2903,100 @@ fn sandbox_global_shared_agent_override_non_shared_still_scanned() {
         "agents.list[override-agent].sandbox.docker.binds contains temp path /tmp/z",
     );
     assert_eq!(finding.severity, Severity::Medium);
+}
+
+// --- Upstream sync: exec-approvals missing fail-open ---
+
+#[test]
+fn missing_exec_approvals_emits_finding() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("openclaw.json");
+    fs::write(&config_path, "{}").expect("config should be written");
+    set_mode(&config_path, 0o600);
+    // No exec-approvals.json alongside openclaw.json → missing finding
+    let output = scan_openclaw_state(&[config_path], 1024 * 1024);
+    let missing_findings: Vec<_> = output
+        .findings
+        .iter()
+        .filter(|f| f.id.contains("exec-approvals-missing"))
+        .collect();
+    assert_eq!(missing_findings.len(), 1);
+    assert_eq!(missing_findings[0].severity, Severity::Medium);
+    assert!(missing_findings[0]
+        .evidence
+        .as_deref()
+        .unwrap()
+        .contains("security=full"));
+}
+
+#[test]
+fn exec_approvals_present_suppresses_missing_finding() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("openclaw.json");
+    fs::write(&config_path, "{}").expect("config should be written");
+    set_mode(&config_path, 0o600);
+    let exec_path = temp_dir.path().join("exec-approvals.json");
+    fs::write(&exec_path, "{}").expect("exec-approvals should be written");
+    set_mode(&exec_path, 0o600);
+    let output = scan_openclaw_state(&[config_path, exec_path], 1024 * 1024);
+    let missing_findings: Vec<_> = output
+        .findings
+        .iter()
+        .filter(|f| f.id.contains("exec-approvals-missing"))
+        .collect();
+    assert_eq!(missing_findings.len(), 0);
+}
+
+// --- Upstream sync: groupPolicy open detection ---
+
+#[test]
+fn group_policy_open_is_flagged() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("openclaw.json");
+    fs::write(
+        &config_path,
+        r#"{
+            channels: {
+                telegram: {
+                    groupPolicy: "open"
+                }
+            }
+        }"#,
+    )
+    .expect("config should be written");
+    set_mode(&config_path, 0o600);
+    let exec_path = temp_dir.path().join("exec-approvals.json");
+    fs::write(&exec_path, "{}").expect("exec-approvals should be written");
+    set_mode(&exec_path, 0o600);
+    let output = scan_openclaw_state(&[config_path, exec_path], 1024 * 1024);
+    let finding = finding_with_evidence(&output.findings, "channels.telegram.groupPolicy=open");
+    assert_eq!(finding.severity, Severity::High);
+}
+
+#[test]
+fn group_policy_allowlist_not_flagged() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let config_path = temp_dir.path().join("openclaw.json");
+    fs::write(
+        &config_path,
+        r#"{
+            channels: {
+                telegram: {
+                    groupPolicy: "allowlist"
+                }
+            }
+        }"#,
+    )
+    .expect("config should be written");
+    set_mode(&config_path, 0o600);
+    let exec_path = temp_dir.path().join("exec-approvals.json");
+    fs::write(&exec_path, "{}").expect("exec-approvals should be written");
+    set_mode(&exec_path, 0o600);
+    let output = scan_openclaw_state(&[config_path, exec_path], 1024 * 1024);
+    let group_findings: Vec<_> = output
+        .findings
+        .iter()
+        .filter(|f| f.evidence.as_deref().unwrap_or("").contains("groupPolicy"))
+        .collect();
+    assert_eq!(group_findings.len(), 0);
 }

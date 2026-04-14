@@ -265,6 +265,11 @@ fn suspicious_launcher_evidence(command: Option<&str>, args: &[String]) -> Optio
         }
     }
 
+    // Multi-call binaries that can invoke any standard Unix utility
+    if launcher_name == "busybox" || launcher_name == "toybox" {
+        return Some(launcher_name.to_string());
+    }
+
     None
 }
 
