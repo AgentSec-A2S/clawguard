@@ -192,7 +192,16 @@ impl WatchService {
                 self.pending_warnings.push(warning);
                 continue;
             }
-            outcomes.push(self.handle_event(event)?);
+            match self.handle_event(event) {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(e) => {
+                    // Downgrade transient errors to warnings instead of aborting the watch loop
+                    self.pending_warnings.push(WatchWarning {
+                        path: None,
+                        message: format!("scan cycle error (continuing): {e}"),
+                    });
+                }
+            }
         }
 
         Ok(outcomes)

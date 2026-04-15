@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
@@ -252,7 +252,8 @@ fn handle_connection(
 ) {
     let mut reader = BufReader::new(&stream);
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line).is_err() {
+    // Security: cap request line to 8 KiB to prevent memory exhaustion from slow-drip clients
+    if reader.by_ref().take(8192).read_line(&mut request_line).is_err() {
         return;
     }
 

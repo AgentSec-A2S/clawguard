@@ -90,6 +90,12 @@ pub fn ingest_config_audit_jsonl(
         }
         current_offset += bytes_read as u64;
 
+        // Security: skip lines exceeding 1 MiB to prevent memory exhaustion
+        // from adversarially crafted JSONL with multi-GB lines
+        if line.len() > 1_048_576 {
+            continue;
+        }
+
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -252,6 +258,13 @@ pub fn ingest_skill_changes(state: &mut StateStore, skills_dir: &Path) -> Result
 pub fn ingest_plugin_catalog(state: &mut StateStore, catalog_path: &Path) -> Result<usize, String> {
     if !catalog_path.exists() {
         return Ok(0);
+    }
+
+    // Security: check file size before reading to prevent OOM from oversized catalog
+    if let Ok(meta) = fs::metadata(catalog_path) {
+        if meta.len() > 1_048_576 {
+            return Ok(0); // >1 MiB — skip, consistent with DEFAULT_MAX_FILE_SIZE_BYTES
+        }
     }
 
     // Fix #2: On read/parse failure, preserve previous snapshot

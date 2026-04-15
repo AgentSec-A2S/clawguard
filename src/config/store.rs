@@ -81,6 +81,30 @@ pub fn validate_webhook_url(url: &str) -> Result<String, String> {
     if after_scheme.is_empty() || after_scheme.starts_with('/') || after_scheme.starts_with(':') {
         return Err("webhook URL must include a host".to_string());
     }
+
+    // Security: block private/loopback/link-local IPs to prevent SSRF
+    let host = after_scheme.split('/').next().unwrap_or("");
+    let host_no_port = host.split(':').next().unwrap_or(host);
+    if let Ok(ip) = host_no_port.parse::<std::net::IpAddr>() {
+        match ip {
+            std::net::IpAddr::V4(v4) => {
+                if v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+                {
+                    return Err(format!(
+                        "webhook URL must not use private/loopback address: {v4}"
+                    ));
+                }
+            }
+            std::net::IpAddr::V6(v6) => {
+                if v6.is_loopback() || v6.is_unspecified() {
+                    return Err(format!(
+                        "webhook URL must not use loopback address: {v6}"
+                    ));
+                }
+            }
+        }
+    }
+
     Ok(url.to_string())
 }
 
@@ -94,9 +118,24 @@ pub fn save_config_for_home(
         .ok_or_else(|| ConfigStoreError::Serialize("config path has no parent".to_string()))?;
 
     fs::create_dir_all(parent).map_err(ConfigStoreError::Io)?;
+
+    // Security: restrict directory permissions to owner-only (Unix)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+    }
+
     let contents =
         toml::to_string(config).map_err(|error| ConfigStoreError::Serialize(error.to_string()))?;
     fs::write(&path, contents).map_err(ConfigStoreError::Io)?;
+
+    // Security: restrict config file permissions to owner-only (Unix)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
 
     Ok(path)
 }

@@ -75,6 +75,13 @@ impl StateStore {
                     parent.display()
                 ),
             })?;
+
+            // Security: restrict DB directory permissions to owner-only (Unix)
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+            }
         }
 
         if !config.path.exists() {
