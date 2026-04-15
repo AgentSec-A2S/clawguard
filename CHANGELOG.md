@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0-beta.4] - 2026-04-15
+
+### Security — Trail of Bits Audit Fixes
+
+- Bound SSE request `read_line` to 8 KiB to prevent memory exhaustion from slow-drip clients
+- Cap JSONL ingestion line length to 1 MiB — skip oversized lines instead of OOM
+- Add `metadata().len()` size guard before `catalog.json` read (was the only scanner missing it)
+- Block private/loopback/link-local IPs in webhook URL validation (SSRF prevention)
+- Set `0o700` directory + `0o600` file permissions on config and DB files (Unix)
+- Downgrade transient scan cycle errors to warnings instead of aborting watch loop
+
+### Audit Results
+
+- Semgrep scan (227 rules, 8 rulesets): 0 findings
+- Supply chain: 0 yanked versions, 0 unsafe blocks, 0 hardcoded secrets
+- Confirmed secure: parameterized SQL, TLS on by default, path traversal protected, no ReDoS
+
 ## [1.2.0-beta.3] - 2026-04-15
 
 ### Fixed — Deep Docker UAT follow-up
