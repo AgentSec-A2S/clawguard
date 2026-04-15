@@ -1,6 +1,6 @@
 # ClawGuard
 
-**Current version: v1.0.0-beta.2**
+**Current version: v1.2.0-beta.3**
 
 > [Why ClawGuard Exists](#why-clawguard-exists) | [Current Features](#current-features) | [What It Checks](#what-it-checks-today) | [How It Works](#how-it-works) | [Requirements](#requirements) | [Install](#install) | [Usage](#first-run-and-usage) | [Notifications](#notifications) | [Output Model](#output-model) | [Scope & Limits](#current-v0-scope-and-limits) | [Development](#development)
 
@@ -302,7 +302,8 @@ cargo build --release
   - prints a ready-to-paste `openclaw.json` plugin config snippet
   - `--apply` writes the plugin config into `openclaw.json` automatically (creates backup first)
 - `clawguard notify off`
-  - disables all notifications (log-only) and stops the SSE server
+  - disables all notifications (log-only) and turns off ClawGuard's local SSE config
+  - does not stop externally managed or plugin-owned SSE servers that are running outside the current ClawGuard process
 - `clawguard watch`
   - starts a foreground watcher loop that continuously monitors the detected OpenClaw runtime
   - **cold boot**: runs a full scan on startup — discovery, all detectors, baseline drift comparison, snapshot + findings persisted to SQLite
@@ -319,7 +320,7 @@ cargo build --release
   - `--category config|hook|plugin|tool|skill` filters by event category
   - `--since 1h|24h|7d` filters by time range
   - `--limit N` limits output (default 50)
-  - `--json` emits machine-readable JSONL output
+  - `--json` emits a machine-readable top-level JSON array (including `[]` for the empty case)
 - `clawguard stats`
   - shows aggregate scan and security statistics over time
   - `--since 1h|7d|30d` filters statistics to a time window
@@ -393,7 +394,9 @@ Daily digest cadence starts on the first `watch` evaluation. ClawGuard seeds the
 
 ### SSE server (real-time streaming)
 
-An embedded SSE server streams alert and digest events to external consumers on a dedicated thread.
+An embedded, ClawGuard-owned SSE server streams alert and digest events to external consumers on a dedicated thread.
+If another process already owns the configured port, `clawguard watch` keeps running and reports a degraded local-SSE warning instead of exiting.
+This server is local to the current `clawguard watch` process; externally managed or plugin-owned SSE servers are separate infrastructure.
 
 Enable in `~/.clawguard/config.toml`:
 
@@ -414,7 +417,8 @@ Config hot-reload: changing `port` or `bind` while watching automatically restar
 | `GET /stream` | SSE event stream (`event: alert`, `event: digest`, `event: heartbeat`) |
 | `GET /health` | Health check: `{"ok":true}` |
 | `GET /status` | Current state: client count, mode |
-| `GET /alerts?limit=10` | Recent alerts as JSON |
+| `GET /alerts?limit=10` | Recent open alerts as JSON (default view) |
+| `GET /alerts?status=all&limit=10` | Recent alert history including open, acknowledged, and resolved alerts |
 
 Test with curl:
 

@@ -1,6 +1,6 @@
 # ClawGuard
 
-**当前版本: v1.0.0-beta.2**
+**当前版本: v1.2.0-beta.3**
 
 > [为什么需要](#为什么需要-clawguard) | [当前能力](#当前能力) | [检查项](#现在会检查什么) | [工作方式](#工作方式) | [系统要求](#系统要求) | [安装](#安装) | [使用](#首次运行与常用命令) | [通知](#通知) | [输出模型](#输出模型) | [范围与限制](#当前范围与限制) | [开发](#开发)
 
@@ -312,7 +312,8 @@ cargo build --release
   - 输出可直接粘贴到 `openclaw.json` 的插件配置片段
   - `--apply` 自动将插件配置写入 `openclaw.json`（写入前自动创建备份）
 - `clawguard notify off`
-  - 关闭所有通知（仅日志输出）并停止 SSE 服务器
+  - 关闭所有通知（仅日志输出），并关闭 ClawGuard 自己的本地 SSE 配置
+  - 不会停止运行在当前 ClawGuard 进程之外的外部 / plugin 托管 SSE 服务
 - `clawguard watch`
   - 启动前台 watch 循环，持续监控检测到的 OpenClaw 运行时
   - **冷启动**：首次运行时执行完整扫描 — 发现运行时、运行所有检测器、基线漂移比对、快照 + findings 持久化到 SQLite
@@ -329,7 +330,7 @@ cargo build --release
   - `--category config|hook|plugin|tool|skill` 按类别筛选
   - `--since 1h|24h|7d` 按时间范围筛选
   - `--limit N` 限制输出条数（默认 50）
-  - `--json` 输出机器可读的 JSONL 格式
+  - `--json` 输出机器可读的顶层 JSON 数组（空结果时为 `[]`）
 - `clawguard stats`
   - 显示聚合扫描与安全统计数据
   - `--since 1h|7d|30d` 按时间窗口过滤统计数据
@@ -402,7 +403,9 @@ webhook_url = "https://hooks.example.com/clawguard"
 
 ### SSE 服务器（实时流式推送）
 
-内嵌 SSE 服务器在独立线程上将告警和摘要事件推送给外部消费者。
+内嵌、由 ClawGuard 自己拥有的 SSE 服务器会在独立线程上将告警和摘要事件推送给外部消费者。
+如果配置的端口已被其他进程占用，`clawguard watch` 会继续运行，并报告一个“本地 SSE 退化”的 warning，而不会直接退出。
+这个 SSE 服务器只属于当前的 `clawguard watch` 进程；外部或 plugin 托管的 SSE 基础设施是独立存在的。
 
 在 `~/.clawguard/config.toml` 中启用：
 
@@ -423,7 +426,8 @@ Config 热更新：运行时修改 `port` 或 `bind` 会自动重启服务器。
 | `GET /stream` | SSE 事件流（`event: alert`、`event: digest`、`event: heartbeat`） |
 | `GET /health` | 健康检查：`{"ok":true}` |
 | `GET /status` | 当前状态：客户端数量、模式 |
-| `GET /alerts?limit=10` | 近期告警 JSON 列表 |
+| `GET /alerts?limit=10` | 近期 `open` 告警 JSON 列表（默认视图） |
+| `GET /alerts?status=all&limit=10` | 含 `open` / `acknowledged` / `resolved` 的近期告警历史 |
 
 用 curl 测试：
 

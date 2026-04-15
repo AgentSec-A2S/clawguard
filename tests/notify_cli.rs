@@ -339,6 +339,33 @@ fn notify_off_disables_all() {
 }
 
 #[test]
+fn notify_off_clarifies_external_sse_servers_are_not_stopped() {
+    let (_temp, home_dir) = prepare_openclaw_home();
+    bootstrap_saved_config(&home_dir);
+
+    Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["notify", "telegram", "999"])
+        .assert()
+        .success();
+
+    let assert = Command::cargo_bin("clawguard")
+        .expect("binary should exist")
+        .env("HOME", &home_dir)
+        .args(["notify", "off"])
+        .assert()
+        .success();
+    let out = stdout_text(&assert);
+    let normalized = out.to_ascii_lowercase();
+
+    assert!(
+        normalized.contains("local sse") && normalized.contains("externally managed"),
+        "notify off should clarify that only ClawGuard-owned local SSE is disabled: {out}"
+    );
+}
+
+#[test]
 fn notify_off_clears_webhook_url() {
     let (_temp, home_dir) = prepare_openclaw_home();
     bootstrap_saved_config(&home_dir);

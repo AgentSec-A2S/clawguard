@@ -242,6 +242,56 @@ fn pending_alert_delivery_records_receipts_once_per_route() {
 }
 
 #[test]
+fn pending_alert_delivery_skips_acknowledged_alerts_without_receipt() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))
+        .expect("db should open")
+        .store;
+    let open_alert = sample_alert();
+    let mut acknowledged_alert = sample_alert();
+    acknowledged_alert.alert_id = "alert:test:acknowledged".to_string();
+    acknowledged_alert.finding_id = "baseline:modified:/tmp/acknowledged".to_string();
+    acknowledged_alert.finding.path = "/tmp/acknowledged".to_string();
+    acknowledged_alert.status = AlertStatus::Acknowledged;
+    let config = log_only_config();
+    let desktop = FakeDesktopNotifier::default();
+    let webhook = FakeWebhookTransport::success();
+    let services = NotificationServices {
+        platform: PlatformSnapshot::default(),
+        desktop_notifier: &desktop,
+        webhook_transport: &webhook,
+    };
+
+    store
+        .append_alert(&open_alert)
+        .expect("open alert should persist");
+    store
+        .append_alert(&acknowledged_alert)
+        .expect("acknowledged alert should persist");
+
+    let report =
+        deliver_pending_alerts_for_route_with_services(&mut store, &config, 100, &services)
+            .expect("pending alerts should deliver");
+
+    assert_eq!(report.delivered_count, 1);
+    assert_eq!(report.delivered_alerts, vec![open_alert.clone()]);
+    assert!(
+        store
+            .notification_receipt_for_alert(&open_alert.alert_id, "log_only")
+            .expect("receipt lookup should succeed")
+            .is_some(),
+        "open alert should record a receipt"
+    );
+    assert!(
+        store
+            .notification_receipt_for_alert(&acknowledged_alert.alert_id, "log_only")
+            .expect("receipt lookup should succeed")
+            .is_none(),
+        "acknowledged alert must not be delivered or record a receipt"
+    );
+}
+
+#[test]
 fn pending_alert_delivery_failure_returns_warning_without_receipt() {
     let temp_dir = tempdir().expect("temp dir should be created");
     let mut store = StateStore::open(StateStoreConfig::for_path(temp_dir.path().join("state.db")))

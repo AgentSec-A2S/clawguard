@@ -267,6 +267,12 @@ struct TrustOutput {
 struct WarningOutput {
     path: Option<String>,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
 }
 
 #[derive(Debug)]
@@ -603,7 +609,7 @@ fn run_trust_command(cli: &Cli, args: &TrustArgs) -> ExitCode {
             .into_iter()
             .filter(|alert| {
                 alert.finding.category == crate::scan::FindingCategory::Drift
-                    && alert.finding.path == restored_path
+                    && paths_refer_to_same_file(&alert.finding.path, &restored_path)
             })
             .map(|alert| alert.alert_id)
             .collect(),
@@ -917,6 +923,16 @@ fn run_notify_update_command(cli: &Cli, cmd: &NotifyCommands) -> ExitCode {
         }
 
         println!("Run `clawguard watch` to start monitoring.");
+
+        if let NotifyCommands::Off = cmd {
+            println!();
+            println!(
+                "Note: `notify off` disables only ClawGuard's local SSE config and watch-owned server."
+            );
+            println!(
+                "Externally managed or plugin-owned SSE servers keep running until you stop them separately."
+            );
+        }
 
         if config.sse.bind == "127.0.0.1" {
             println!();
@@ -1497,6 +1513,9 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
         Ok(baselines) if baselines.is_empty() => pending_warning_outputs.push(WarningOutput {
             path: None,
             message: "no approved baselines exist yet; run `clawguard baseline approve` before treating drift findings as a trusted delta".to_string(),
+            kind: None,
+            bind: None,
+            port: None,
         }),
         Ok(_) => {}
         Err(error) => {
@@ -1524,7 +1543,10 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
         config.sse.port
     };
     let mut current_sse_bind = config.sse.bind.clone();
-    let mut sse_server = start_sse_if_enabled(&current_sse_bind, current_sse_port);
+    let initial_sse_startup =
+        start_sse_if_enabled(&current_sse_bind, current_sse_port, service.state());
+    pending_warning_outputs.extend(initial_sse_startup.warnings);
+    let mut sse_server = initial_sse_startup.server;
 
     let state_db_path = service.state().path().display().to_string();
     let max_iterations = if args.iterations == 0 {
@@ -1647,7 +1669,10 @@ fn run_watch_command(cli: &Cli, args: &WatchArgs) -> ExitCode {
                     }
                     current_sse_port = new_port;
                     current_sse_bind = new_bind;
-                    sse_server = start_sse_if_enabled(&current_sse_bind, current_sse_port);
+                    let restarted_sse =
+                        start_sse_if_enabled(&current_sse_bind, current_sse_port, service.state());
+                    pending_warning_outputs.extend(restarted_sse.warnings);
+                    sse_server = restarted_sse.server;
                 }
             }
         }
@@ -2152,20 +2177,79 @@ fn apply_plugin_config_to_openclaw(
     Ok(backup_path)
 }
 
-fn start_sse_if_enabled(bind: &str, port: u16) -> Option<SseServer> {
+struct SseStartup {
+    server: Option<SseServer>,
+    warnings: Vec<WarningOutput>,
+}
+
+fn start_sse_if_enabled(
+    bind: &str,
+    port: u16,
+    state_store: &crate::state::db::StateStore,
+) -> SseStartup {
     if port == 0 {
-        return None;
+        return SseStartup {
+            server: None,
+            warnings: Vec::new(),
+        };
     }
 
-    match SseServer::start(bind, port) {
+    let mut warnings = Vec::new();
+    let recent_alerts = match state_store.list_recent_alerts(RECENT_ALERT_LIMIT) {
+        Ok(alerts) => alerts,
+        Err(error) => {
+            warnings.push(warning_output_from_message(&format!(
+                "failed to seed recent SSE alerts from state: {error}"
+            )));
+            Vec::new()
+        }
+    };
+
+    match SseServer::start_with_recent_alerts(bind, port, recent_alerts) {
         Ok(server) => {
             eprintln!("SSE server listening on {}:{}", bind, server.port());
-            Some(server)
+            SseStartup {
+                server: Some(server),
+                warnings,
+            }
         }
         Err(error) => {
-            eprintln!("warning: failed to start SSE server: {error}");
-            None
+            warnings.push(sse_start_warning_output(bind, port, &error));
+            SseStartup {
+                server: None,
+                warnings,
+            }
         }
+    }
+}
+
+fn sse_start_warning_output(bind: &str, port: u16, error: &str) -> WarningOutput {
+    let error_lower = error.to_ascii_lowercase();
+    let bind_conflict = error_lower.contains("address already in use")
+        || error_lower.contains("addrinuse")
+        || error_lower.contains("os error 48")
+        || error_lower.contains("os error 98");
+
+    let message = if bind_conflict {
+        format!(
+            "local SSE server unavailable on {bind}:{port} because another process already owns that port; watch will continue without a ClawGuard-hosted /stream, /status, or /alerts API in this process"
+        )
+    } else {
+        format!(
+            "failed to start local SSE server on {bind}:{port}; watch will continue without a ClawGuard-hosted /stream, /status, or /alerts API in this process ({error})"
+        )
+    };
+
+    WarningOutput {
+        path: None,
+        message,
+        kind: Some(if bind_conflict {
+            "sse_bind_conflict".to_string()
+        } else {
+            "sse_start_failed".to_string()
+        }),
+        bind: Some(bind.to_string()),
+        port: Some(port),
     }
 }
 
@@ -2257,6 +2341,17 @@ fn restore_path_for_target(
             )
         })
         .map(|payload| payload.path.clone())
+}
+
+fn paths_refer_to_same_file(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left_path), Ok(right_path)) => left_path == right_path,
+        _ => false,
+    }
 }
 
 fn approve_baselines_from_artifacts(
@@ -2406,6 +2501,9 @@ fn warning_output_from_state(warning: &StateWarning) -> WarningOutput {
     WarningOutput {
         path: warning.path.as_ref().map(|path| path.display().to_string()),
         message: warning.message.clone(),
+        kind: None,
+        bind: None,
+        port: None,
     }
 }
 
@@ -2413,6 +2511,9 @@ fn warning_output_from_watch(warning: &WatchWarning) -> WarningOutput {
     WarningOutput {
         path: warning.path.as_ref().map(|path| path.display().to_string()),
         message: warning.message.clone(),
+        kind: None,
+        bind: None,
+        port: None,
     }
 }
 
@@ -2420,6 +2521,9 @@ fn warning_output_from_message(message: &str) -> WarningOutput {
     WarningOutput {
         path: None,
         message: message.to_string(),
+        kind: None,
+        bind: None,
+        port: None,
     }
 }
 

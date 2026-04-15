@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.2.0-beta.3] - 2026-04-15
+
+### Fixed — Deep Docker UAT follow-up
+
+- **SSE `/alerts` contract** — the embedded SSE server now returns recent `open` alerts by default, honors query-safe `status` and `limit` filters, and keeps known routes working when query strings are present.
+- **Notification route replay suppression** — newly enabled routes now deliver only fresh `open` alerts. Previously an acknowledged historical alert could be replayed when a webhook route was enabled after the acknowledgement.
+- **Missing `exec-approvals.json` remediation path** — the OpenClaw audit finding now points at the real expected root path under `~/.openclaw/exec-approvals.json` instead of a nested agent directory.
+- **Degraded local SSE startup reporting** — `clawguard watch --json` now emits structured warnings with `kind`, `bind`, and `port`, and bind conflicts are reported as degraded local SSE startup instead of an ambiguous failure.
+- **`notify off` operator guidance** — the CLI now explicitly states that `notify off` disables only ClawGuard’s local SSE config and does not stop externally managed or plugin-owned SSE servers.
+
+### Docs
+
+- Added durable repo copies of the deep Docker UAT report and the focused fix retest report.
+- Updated the README set and architecture docs to reflect the current `audit --json` array contract and the ClawGuard-owned SSE semantics.
+
+### Tests
+
+- Expanded `tests/sse_server.rs` to pin the `/alerts` default view, `status=all`, `limit`, invalid-query fallback, and query-string-safe routing behavior.
+- Added notification and watcher regression coverage for acknowledged-alert route replay, structured SSE bind-conflict warnings, `notify off` messaging, and fresh re-alert IDs.
+- Added OpenClaw audit coverage for the corrected missing `exec-approvals.json` path rendering.
+
 ## [1.2.0-beta.2] - 2026-04-15
 
 ### Fixed — UAT 2026-04-15

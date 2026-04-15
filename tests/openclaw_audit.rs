@@ -2922,11 +2922,49 @@ fn missing_exec_approvals_emits_finding() {
         .collect();
     assert_eq!(missing_findings.len(), 1);
     assert_eq!(missing_findings[0].severity, Severity::Medium);
+    assert_eq!(
+        missing_findings[0].path,
+        canonical_path_string(&temp_dir.path().join("exec-approvals.json")),
+        "missing finding should point to the sibling exec-approvals.json next to openclaw.json"
+    );
     assert!(missing_findings[0]
         .evidence
         .as_deref()
         .unwrap()
         .contains("security=full"));
+}
+
+#[test]
+fn missing_exec_approvals_anchors_expected_path_to_openclaw_root_when_agent_paths_sort_first() {
+    let temp_dir = tempdir().expect("temp dir should be created");
+    let openclaw_root = temp_dir.path().join(".openclaw");
+    let agent_dir = openclaw_root.join("agents").join("main").join("agent");
+    fs::create_dir_all(&agent_dir).expect("agent dir should be created");
+
+    let config_path = openclaw_root.join("openclaw.json");
+    fs::write(&config_path, "{}").expect("config should be written");
+    set_mode(&config_path, 0o600);
+
+    let auth_profiles_path = agent_dir.join("auth-profiles.json");
+    fs::write(
+        &auth_profiles_path,
+        r#"{"profiles":{"primary":{"provider":"openai"}}}"#,
+    )
+    .expect("auth profiles should be written");
+    set_mode(&auth_profiles_path, 0o600);
+
+    let output = scan_openclaw_state(&[auth_profiles_path, config_path], 1024 * 1024);
+    let missing_finding = output
+        .findings
+        .iter()
+        .find(|finding| finding.id.contains("exec-approvals-missing"))
+        .expect("missing exec approvals finding should be emitted");
+
+    assert_eq!(
+        missing_finding.path,
+        canonical_path_string(&openclaw_root.join("exec-approvals.json")),
+        "missing finding should anchor on the discovered openclaw.json directory, not an agent subdirectory"
+    );
 }
 
 #[test]

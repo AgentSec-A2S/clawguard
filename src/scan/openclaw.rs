@@ -90,7 +90,14 @@ pub fn scan_openclaw_state(paths: &[PathBuf], max_file_size_bytes: u64) -> OpenC
     });
     if has_openclaw_config && !has_exec_approvals {
         let expected_path = sorted_paths
-            .first()
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n == "openclaw.json")
+                    .unwrap_or(false)
+                    && path.is_file()
+            })
             .and_then(|p| p.parent())
             .map(|dir| dir.join("exec-approvals.json"))
             .map(|p| resolved_path_string(&p))

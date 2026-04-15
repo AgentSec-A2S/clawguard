@@ -1159,24 +1159,29 @@ fn event_rescan_records_drift_alerts_and_debounces_burst_events() {
     )
     .expect("safe config should be written");
 
+    let canonical_home = home_dir
+        .canonicalize()
+        .unwrap_or_else(|_| home_dir.to_path_buf());
+    let canonical_config = canonical_home.join(".openclaw").join("openclaw.json");
+
     let discovery = discover_from_builtin_presets(&DiscoveryOptions {
-        home_dir: Some(home_dir.to_path_buf()),
+        home_dir: Some(canonical_home.clone()),
         ..DiscoveryOptions::default()
     });
     let initial_evidence = collect_scan_evidence(&app_config(), &discovery);
     let config_artifact = initial_evidence
         .artifacts
         .iter()
-        .find(|artifact| artifact.path == config_path.display().to_string())
+        .find(|artifact| artifact.path == canonical_config.display().to_string())
         .expect("config artifact should be collected");
 
     let mut service = WatchService::new(
         app_config(),
         DiscoveryOptions {
-            home_dir: Some(home_dir.to_path_buf()),
+            home_dir: Some(canonical_home.clone()),
             ..DiscoveryOptions::default()
         },
-        open_state_store(home_dir),
+        open_state_store(&canonical_home),
     );
 
     service
@@ -1223,7 +1228,7 @@ fn event_rescan_records_drift_alerts_and_debounces_burst_events() {
     .expect("risky config should be written");
 
     let first = service
-        .handle_event(WatchEvent::new(config_path.clone(), 1_763_900_003_000))
+        .handle_event(WatchEvent::new(canonical_config.clone(), 1_763_900_003_000))
         .expect("rescan should succeed");
     let WatchEventOutcome::Rescanned(first_cycle) = first else {
         panic!("first event should trigger a rescan");
@@ -1256,7 +1261,7 @@ fn event_rescan_records_drift_alerts_and_debounces_burst_events() {
     );
 
     let debounced = service
-        .handle_event(WatchEvent::new(config_path.clone(), 1_763_900_004_000))
+        .handle_event(WatchEvent::new(canonical_config.clone(), 1_763_900_004_000))
         .expect("debounced event should not fail");
     assert_eq!(debounced, WatchEventOutcome::Debounced);
     assert_eq!(
@@ -1270,7 +1275,7 @@ fn event_rescan_records_drift_alerts_and_debounces_burst_events() {
     );
 
     let second = service
-        .handle_event(WatchEvent::new(config_path, 1_763_900_006_500))
+        .handle_event(WatchEvent::new(canonical_config, 1_763_900_006_500))
         .expect("second rescan should succeed");
     let WatchEventOutcome::Rescanned(second_cycle) = second else {
         panic!("event outside the debounce window should trigger a rescan");
@@ -1397,12 +1402,12 @@ fn acknowledged_drift_alert_does_not_suppress_re_alerting_on_next_rescan() {
         .list_unresolved_alerts()
         .expect("should read alerts");
     assert_eq!(alerts.len(), 1, "first rescan should create one alert");
+    let original_alert_id = alerts[0].alert_id.clone();
 
     // Acknowledge the alert
-    let alert_id = alerts[0].alert_id.clone();
     service
         .state_mut()
-        .update_alert_status(&alert_id, AlertStatus::Acknowledged)
+        .update_alert_status(&original_alert_id, AlertStatus::Acknowledged)
         .expect("acknowledge should succeed");
 
     // Second rescan: drift is still present and the prior alert was acked.
@@ -1430,6 +1435,14 @@ fn acknowledged_drift_alert_does_not_suppress_re_alerting_on_next_rescan() {
     assert!(
         statuses.contains(&AlertStatus::Open),
         "fresh drift should produce a new open alert; got {statuses:?}"
+    );
+    let fresh_alert = all_alerts
+        .iter()
+        .find(|alert| alert.status == AlertStatus::Open)
+        .expect("second rescan should leave one fresh open alert");
+    assert_ne!(
+        fresh_alert.alert_id, original_alert_id,
+        "re-alerting must mint a new alert id so downstream routes can distinguish the fresh detection from acknowledged history"
     );
 }
 

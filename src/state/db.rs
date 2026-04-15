@@ -557,7 +557,7 @@ impl StateStore {
              LEFT JOIN notification_receipts r
                ON r.alert_id = a.alert_id
               AND r.delivery_route = ?1
-             WHERE a.status IN ('open', 'acknowledged')
+             WHERE a.status = 'open'
                AND r.alert_id IS NULL
              ORDER BY a.created_at_unix_ms ASC, a.alert_id ASC",
             [delivery_route],

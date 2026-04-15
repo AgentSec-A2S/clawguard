@@ -522,7 +522,14 @@ fn trust_openclaw_config_restores_payload_and_resolves_matching_alerts() {
     assert_eq!(parsed["trust_target"].as_str(), Some("openclaw-config"));
     assert_eq!(
         parsed["restored_path"].as_str(),
-        Some(config_path.display().to_string().as_str())
+        Some(
+            config_path
+                .canonicalize()
+                .expect("config path should canonicalize")
+                .display()
+                .to_string()
+                .as_str()
+        )
     );
     assert_eq!(parsed["resolved_alert_count"].as_u64(), Some(1));
     assert_eq!(
