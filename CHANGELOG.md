@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.2.0-beta.5] - 2026-04-23
+
+### Added — V1.3 Sprint 1: MCP Supply-Chain Hardening
+
+Four new detectors, all mapped to OWASP ASI06 (Supply Chain):
+
+- **`mcp-no-lockfile`** (Medium) — MCP servers launched via package-manager launchers without a lockfile in scope. JS launcher matrix covers `npx` (incl. `-p` / `--package` / `-y`), `npm exec/x/run`, `pnpm dlx/exec/x`, `yarn dlx/exec`, `bunx`, `bun x/run`, plus `sh -c` / `bash -c` tunnelled invocations. Non-JS runtimes also covered: `deno run/install`, `uv run/tool`, `uvx`, `pipx`, `poetry run`, `rye run`, `python3 -m`, `cargo run`, `go run/install`, `ruby`, `perl`, `php`, `Rscript`, `pnpx`. Lockfile detection accepts `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`, and `bun.lock`. Nested `sh -c "sh -c '...'"` wrappers unwrapped up to depth 3.
+- **`mcp-server-name-typosquat`** (High) — configured server name is a near-match of a curated allowlist entry. NFKC + lowercase + separator-strip normalization, Damerau–Levenshtein distance ≤1 for normalized length 5–7 and ≤2 for length ≥8. Short names (<5 normalized) exempt. Allowlist ships at `data/mcp_server_allowlist.txt` with 30+ canonical entries.
+- **`mcp-command-changed`** (High) — per-server baseline drift on the canonical `{command, args, url, cwd, env_keys}` tuple. Env *key names* are included (catches `NODE_OPTIONS=--require /tmp/evil.js`, `LD_PRELOAD`, proxy env injection); env *values* are excluded so legitimate secret rotation does not drift. Emitted via synthetic `mcp-command://<config>#<source>::<server_name>` artifact threaded through the existing `BaselineArtifact` pipeline with a dedicated `source_label = "mcp-command"`; the real config file path anchors the finding.
+- **`file-type-mismatch`** (High) — byte-first signature sweep of skill and hook directories. Flags any file with a text-like extension (or extensionless hook) whose first 16 bytes match a native executable header: ELF, PE/MZ, Mach-O MH_MAGIC · MH_MAGIC_64 · MH_CIGAM · MH_CIGAM_64, fat-universal FAT_MAGIC · FAT_CIGAM. Short-circuits on the binary-extension allowlist (`.node`, `.wasm`, `.so`, `.dylib`, `.dll`, `.exe`, `.bin`, `.o`, `.a`). Scan-boundary symlink-escape guards.
+
+### Added — Other Sprint 1 Coverage
+
+- **`hook-multiple-handlers`** (Medium, ASI06) — warns when more than one priority handler file (`handler.ts` / `handler.js` / `index.ts` / `index.js` / `handler.mjs` / `handler.cjs`) coexists in a single hook directory. Only the highest-priority file is actually executed by OpenClaw, so a shadowed sibling is a classic hide-the-payload pattern (benign `handler.ts` wins loader, malicious `handler.js` sits parked until a later edit swaps them).
+- **Plugin-bundled `.mcp.json` discovery** — the openclaw preset now scans `~/.openclaw/extensions/*/.mcp.json`, the 4th MCP mount point that OpenClaw loads via `resolveBundleMcpConfigPaths` in `src/plugins/bundle-mcp.ts`. Previously invisible to typosquat, lockfile, and command-drift detectors.
+
+### Infrastructure
+
+- New shared module `src/scan/file_type.rs` — byte-first signature detector with 8-row table (ELF / PE-MZ / Mach-O 4 variants / fat-universal 2 variants), `SIGNATURE_MAX_INSPECT_BYTES = 16`, and a structural completeness test that fails if a row is dropped from the table.
+- New data file `data/mcp_server_allowlist.txt` loaded via `include_str!`.
+- `src/scan/skills.rs` + `src/scan/hooks.rs` refactored so the byte-first signature check runs BEFORE any `fs::read_to_string`; both paths now enforce scan-boundary symlink-escape guards.
+- New dependency: `unicode-normalization = "0.1"` (NFKC normalization for typosquat matcher).
+
+### Tests
+
+- 498 tests passing across all suites (was 490). Sprint 1 added 19 tests to `mcp_scan.rs`, 9 to `skills_scan.rs`, 7 to `hooks_scan.rs`, and 13 unit tests in `file_type.rs`. The post-ship patch bundle added a further 2 `mcp_scan.rs` regressions (env-key drift + env-value stability), 1 discovery test, 1 end-to-end `mcp_scan.rs` test (plugin-bundled `.mcp.json` runs the full detector matrix), 2 `hooks_scan.rs` tests (shadow-handler warning + single-handler negative), 16 `mcp-no-lockfile` cases for non-JS runtimes, and 1 nested-`sh -c` tunnel test.
+
 ## [1.2.0-beta.4] - 2026-04-15
 
 ### Security — Trail of Bits Audit Fixes
