@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use super::file_type::{detect_binary_signature, BinarySignature};
+use super::file_type::{classify_leading_bytes, detect_binary_signature, BinarySignature};
 use super::finding::owasp_asi_for_kind;
 use super::{Finding, FindingCategory, Fixability, RecommendedAction, RuntimeConfidence, Severity};
 
@@ -111,12 +111,21 @@ fn scan_single_hook(
         if meta.len() > max_file_size_bytes {
             continue;
         }
-        // Byte-first gate: if this handler is a disguised binary, Phase 1
-        // already emitted the file-type-mismatch finding; skip UTF-8 decode.
-        if detect_binary_signature(&handler_path).is_some() {
+        // Single-open gate: read the file once as bytes, classify leading
+        // bytes against the binary-signature table, then only UTF-8-decode
+        // if the file is text. This replaces a previous two-open flow
+        // (detect_binary_signature + fs::read_to_string) that did the work
+        // with two separate syscall round-trips per handler.
+        let Ok(raw) = fs::read(&handler_path) else {
+            continue;
+        };
+        if classify_leading_bytes(&raw).is_some() {
+            // Phase 1 (file_type_mismatch_sweep) already emitted the
+            // file-type-mismatch finding; stop scanning this hook's handler
+            // chain because OpenClaw will only execute the first one anyway.
             break;
         }
-        let Ok(contents) = fs::read_to_string(&handler_path) else {
+        let Ok(contents) = String::from_utf8(raw) else {
             continue;
         };
         let resolved = resolved_path_string(&handler_path);
@@ -193,6 +202,16 @@ fn is_hook_text_candidate(path: &Path) -> bool {
     }
 }
 
+/// Canonicalize `path` and verify the result stays under `boundary`. This is
+/// a best-effort check: if `fs::canonicalize` fails, we fall back to the
+/// original path (which won't satisfy `starts_with` on a canonical boundary).
+///
+/// Known TOCTOU window: between this check and the subsequent open, a
+/// symlink swap can redirect the read target. The impact is bounded — the
+/// hook scanner only reads, and any disguised binary is caught by the
+/// downstream `classify_leading_bytes` gate — but callers that need strong
+/// guarantees must use an `openat`-style primitive. For ClawGuard's
+/// passive-scan threat model the remaining window is accepted risk.
 fn path_within_boundary(path: &Path, boundary: &Path) -> bool {
     let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     resolved.starts_with(boundary)

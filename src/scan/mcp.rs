@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -845,13 +846,21 @@ fn no_lockfile_evidence(
 
 // ---- Typosquat detection (Sprint 1 Task 2.2) ----
 
-fn curated_allowlist() -> Vec<String> {
-    MCP_SERVER_ALLOWLIST_RAW
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(normalize_server_name)
-        .collect()
+/// Parsed + normalized allowlist cached for the lifetime of the process.
+/// Parsing is idempotent and pure, so a `OnceLock` is safe across threads and
+/// avoids re-walking `MCP_SERVER_ALLOWLIST_RAW` on every typosquat check.
+fn curated_allowlist() -> &'static [String] {
+    static CURATED: OnceLock<Vec<String>> = OnceLock::new();
+    CURATED
+        .get_or_init(|| {
+            MCP_SERVER_ALLOWLIST_RAW
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(normalize_server_name)
+                .collect()
+        })
+        .as_slice()
 }
 
 /// NFKC + lowercase + collapse separators (`-_. `) by stripping them.
@@ -867,6 +876,50 @@ fn normalize_server_name(raw: &str) -> String {
         .chars()
         .filter(|c| !matches!(c, '-' | '_' | ' ' | '.'))
         .collect()
+}
+
+/// Second-pass normalization for homoglyph defense. Same pipeline as
+/// [`normalize_server_name`] but additionally folds Cyrillic/Greek
+/// look-alikes to ASCII. If the fold changes a string, the original
+/// contained at least one non-ASCII homoglyph — a strong typosquat signal.
+fn normalize_server_name_fold(raw: &str) -> String {
+    normalize_server_name(raw).chars().map(fold_homoglyph).collect()
+}
+
+/// Map a single `char` that visually resembles an ASCII letter/digit to the
+/// corresponding ASCII `char`. Characters that are not known homoglyphs are
+/// returned unchanged. The table intentionally covers the high-value cases
+/// (Cyrillic lower-case alphabet + a few Greek/fullwidth) that attackers use
+/// to mint typosquat MCP server names.
+fn fold_homoglyph(c: char) -> char {
+    match c {
+        // Cyrillic lowercase look-alikes
+        'а' => 'a', // U+0430
+        'в' => 'b', // approximate — rarely used alone
+        'с' => 'c', // U+0441
+        'е' => 'e', // U+0435
+        'һ' => 'h', // U+04BB
+        'і' => 'i', // U+0456
+        'ј' => 'j', // U+0458
+        'к' => 'k', // U+043A
+        'ӏ' => 'l', // U+04CF
+        'м' => 'm', // approximate
+        'н' => 'h', // U+043D — visually matches Latin 'h' far better than 'n'
+        'о' => 'o', // U+043E
+        'р' => 'p', // U+0440
+        'ԛ' => 'q', // U+051B
+        'ѕ' => 's', // U+0455
+        'т' => 't', // U+0442
+        'у' => 'y', // U+0443
+        'х' => 'x', // U+0445
+        // Greek lowercase look-alikes
+        'α' => 'a',
+        'ο' => 'o',
+        'ν' => 'v',
+        'ρ' => 'p',
+        // Fullwidth Latin is handled by the earlier NFKC step; nothing to do here.
+        other => other,
+    }
 }
 
 fn damerau_levenshtein(a: &str, b: &str) -> usize {
@@ -913,20 +966,35 @@ fn typosquat_evidence(server_name: &str) -> Option<String> {
     let threshold = if normalized_len <= 7 { 1 } else { 2 };
     let allowlist = curated_allowlist();
 
-    // Exact-match pass first: if the configured name normalizes to a canonical
-    // allowlist entry, the server is definitively legitimate.
+    // Exact-match pass first (no homoglyph fold): if the configured name
+    // normalizes directly to a canonical allowlist entry, it's legitimate.
     if allowlist.iter().any(|canonical| canonical == &normalized) {
         return None;
     }
 
+    // Homoglyph-fold pass: if the name only matches an allowlist entry AFTER
+    // folding Cyrillic/Greek look-alikes to ASCII, the original contained a
+    // homoglyph attack. Distance is zero in fold-space, so this is a hard
+    // signal — flag it with explicit evidence.
+    let folded = normalize_server_name_fold(server_name);
+    if folded != normalized {
+        if let Some(canonical_match) = allowlist.iter().find(|canonical| **canonical == folded) {
+            return Some(format!(
+                "{server_name} uses non-ASCII homoglyphs of {canonical_match} (fold distance 0)"
+            ));
+        }
+    }
+
     // Near-match pass: flag the first canonical within Damerau-Levenshtein
-    // threshold. Allowlist entries below the length floor are skipped so
+    // threshold on the fold-normalized form (so homoglyph + typo combos are
+    // still caught). Allowlist entries below the length floor are skipped so
     // 3-4 char names can't pull near-matches from the short-name corner.
-    for canonical_norm in &allowlist {
+    let haystack = if folded != normalized { &folded } else { &normalized };
+    for canonical_norm in allowlist {
         if canonical_norm.chars().count() < 5 {
             continue;
         }
-        let d = damerau_levenshtein(&normalized, canonical_norm);
+        let d = damerau_levenshtein(haystack, canonical_norm);
         if d > 0 && d <= threshold {
             return Some(format!(
                 "{server_name} resembles {canonical_norm} (distance {d})"

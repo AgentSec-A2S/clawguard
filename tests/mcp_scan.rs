@@ -662,6 +662,33 @@ fn typosquat_unrelated_custom_name_not_flagged() {
     ));
 }
 
+#[test]
+fn typosquat_cyrillic_homoglyph_of_canonical_is_flagged() {
+    // "filesystem" but with the Latin 'e' at offset 3 replaced by Cyrillic
+    // 'е' (U+0435) — visually identical, byte-level different. The legacy
+    // normalizer treated this as a distinct name and let it through; the
+    // fold pass must catch it.
+    let dir = tempdir().expect("temp dir");
+    let config = write_mcp_config(
+        dir.path(),
+        "openclaw.json",
+        "{ mcpServers: { \"fil\u{0435}system\": { command: \"npx\", args: [\"foo\"] } } }",
+    );
+    fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+
+    let output = scan_mcp_configs(&[config], 1024 * 1024);
+    let finding = output
+        .findings
+        .iter()
+        .find(|f| f.id.contains("mcp-server-name-typosquat"))
+        .expect("homoglyph typosquat must be flagged");
+    let evidence = finding.evidence.as_deref().unwrap_or_default();
+    assert!(
+        evidence.contains("homoglyph") || evidence.contains("fold"),
+        "evidence should explain the homoglyph: {evidence}"
+    );
+}
+
 // --- Sprint 1 Task 1.2 / 2.3: Synthetic command artifacts + mcp-command-changed ---
 
 #[test]

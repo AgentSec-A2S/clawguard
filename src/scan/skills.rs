@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use super::file_type::{detect_binary_signature, BinarySignature};
+use super::file_type::{classify_leading_bytes, BinarySignature};
 use super::finding::owasp_asi_for_kind;
 use super::{Finding, FindingCategory, Fixability, RecommendedAction, RuntimeConfidence, Severity};
 
@@ -64,17 +64,19 @@ pub fn scan_skill_dir(
             }
         }
 
-        // Byte-first integrity: if the file claims a text-like skill extension
-        // but begins with a native executable header, emit file-type-mismatch
-        // and skip the UTF-8 decode. This prevents a disguised binary from
-        // being silently dropped by `read_to_string` and sneaking past the
-        // skill content scanner.
-        if let Some(signature) = detect_binary_signature(&file_path) {
+        // Single-open byte-first integrity: read the file once as raw bytes,
+        // classify the leading window against the binary-signature table,
+        // then either emit file-type-mismatch OR UTF-8-decode the same
+        // buffer for the skill content scanner. This replaces a prior
+        // two-open flow (detect_binary_signature + fs::read_to_string).
+        let Ok(raw) = fs::read(&file_path) else {
+            continue;
+        };
+        if let Some(signature) = classify_leading_bytes(&raw) {
             findings.push(build_file_type_mismatch_finding(&resolved_path, signature));
             continue;
         }
-
-        let Ok(contents) = fs::read_to_string(&file_path) else {
+        let Ok(contents) = String::from_utf8(raw) else {
             continue;
         };
 
