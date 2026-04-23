@@ -92,6 +92,27 @@ enum Commands {
     Stats(StatsArgs),
     /// Show the permission posture score for the current OpenClaw runtime.
     Posture,
+    /// Manage the runtime policy manifest at ~/.clawguard/policy.toml.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicyCommands {
+    /// Write the default policy manifest to ~/.clawguard/policy.toml.
+    Init {
+        /// Overwrite any existing manifest.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Parse and validate a policy manifest without applying it.
+    Validate {
+        /// Manifest to validate. Defaults to ~/.clawguard/policy.toml.
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -328,6 +349,7 @@ pub fn run() -> ExitCode {
         Some(Commands::Audit(ref args)) => run_audit_command(&cli, args),
         Some(Commands::Stats(ref args)) => run_stats_command(&cli, args),
         Some(Commands::Posture) => run_posture_command(&cli),
+        Some(Commands::Policy { ref command }) => run_policy_command(&cli, command),
         None => run_root_command(&cli),
     }
 }
@@ -1264,6 +1286,110 @@ fn run_stats_command(cli: &Cli, args: &StatsArgs) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn run_policy_command(cli: &Cli, command: &PolicyCommands) -> ExitCode {
+    use crate::runtime::policy::manifest::{
+        default_manifest, load_manifest, DEFAULT_MANIFEST_TOML,
+    };
+    use std::fs;
+
+    let home = resolve_home_dir();
+    let config_root = home.join(".clawguard");
+    let manifest_path = config_root.join("policy.toml");
+
+    match command {
+        PolicyCommands::Init { force } => {
+            if let Err(e) = fs::create_dir_all(&config_root) {
+                eprintln!("clawguard policy init: cannot create {}: {e}", config_root.display());
+                return ExitCode::FAILURE;
+            }
+            if manifest_path.exists() && !force {
+                if cli.json {
+                    println!(
+                        "{{\"status\":\"exists\",\"path\":{:?}}}",
+                        manifest_path.display().to_string()
+                    );
+                } else {
+                    println!(
+                        "policy manifest already exists at {} (use --force to overwrite)",
+                        manifest_path.display()
+                    );
+                }
+                return ExitCode::SUCCESS;
+            }
+            if let Err(e) = fs::write(&manifest_path, DEFAULT_MANIFEST_TOML) {
+                eprintln!("clawguard policy init: cannot write manifest: {e}");
+                return ExitCode::FAILURE;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(
+                    &manifest_path,
+                    fs::Permissions::from_mode(0o600),
+                );
+            }
+            if cli.json {
+                println!(
+                    "{{\"status\":\"written\",\"path\":{:?}}}",
+                    manifest_path.display().to_string()
+                );
+            } else {
+                println!("wrote default policy manifest to {}", manifest_path.display());
+            }
+            // Round-trip parse so an unreadable default at compile time is caught here.
+            let _ = default_manifest();
+            ExitCode::SUCCESS
+        }
+        PolicyCommands::Validate { path } => {
+            let target = path.clone().unwrap_or_else(|| manifest_path.clone());
+            let root = match target.parent() {
+                Some(p) => p.to_path_buf(),
+                None => {
+                    eprintln!(
+                        "clawguard policy validate: cannot determine config root for {}",
+                        target.display()
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
+            match load_manifest(&target, &root) {
+                Ok(m) => {
+                    if cli.json {
+                        println!(
+                            "{{\"status\":\"ok\",\"path\":{:?},\"patterns\":{},\"sensitive_paths\":{}}}",
+                            target.display().to_string(),
+                            m.destructive_actions.patterns.len(),
+                            m.lethal_trifecta.sensitive_paths.len()
+                        );
+                    } else {
+                        println!(
+                            "{}: ok ({} destructive patterns, {} sensitive paths, rate_limit={}/{}s)",
+                            target.display(),
+                            m.destructive_actions.patterns.len(),
+                            m.lethal_trifecta.sensitive_paths.len(),
+                            m.rate_limit.destructive_per_window,
+                            m.rate_limit.window_seconds
+                        );
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    if cli.json {
+                        println!(
+                            "{{\"status\":\"error\",\"path\":{:?},\"error\":{:?}}}",
+                            target.display().to_string(),
+                            e.to_string()
+                        );
+                    } else {
+                        eprintln!("{}: {}", target.display(), e);
+                    }
+                    ExitCode::FAILURE
+                }
+            }
+        }
+    }
 }
 
 fn run_posture_command(cli: &Cli) -> ExitCode {

@@ -82,7 +82,10 @@ pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
         | "acp-approve-all"
         | "gateway-node-dangerous-command"
         | "tool-profile-escalation"
-        | "hook-shell-exec" => Some("ASI02".into()),
+        | "hook-shell-exec"
+        | "runtime-destructive-action"
+        | "runtime-path-escape"
+        | "runtime-rate-limit-exceeded" => Some("ASI02".into()),
         // ASI02: Excessive Agency (missing approval guardrails)
         "exec-approvals-missing" => Some("ASI02".into()),
         // ASI03: Privilege Escalation
@@ -114,8 +117,16 @@ pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
         | "mcp-server-name-typosquat"
         | "mcp-command-changed"
         | "file-type-mismatch"
-        | "hook-multiple-handlers" => Some("ASI06".into()),
+        | "hook-multiple-handlers"
+        | "runtime-lethal-trifecta-precondition" => Some("ASI06".into()),
         // ASI07: Prompt Injection
+        //
+        // Note: the Sprint 2 openspec originally tagged
+        // `runtime-prompt-injection-shape` as ASI01. We keep prompt-
+        // injection findings at ASI07 here to match the project's
+        // existing convention (see bootstrap-* and
+        // hook-allows-unsafe-external-content above). Future alignment
+        // with upstream OWASP ASI numbering is tracked separately.
         "hook-allows-unsafe-external-content"
         | "hook-allows-request-session-key"
         | "plugin-hook-prompt-injection"
@@ -123,7 +134,8 @@ pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
         | "bootstrap-encoded-payload"
         | "bootstrap-shell-injection"
         | "bootstrap-prompt-injection"
-        | "bootstrap-obfuscated-content" => Some("ASI07".into()),
+        | "bootstrap-obfuscated-content"
+        | "runtime-prompt-injection-shape" => Some("ASI07".into()),
         // ASI09: Secrets Exposure (note: secrets detector sets ASI09 directly, this is a fallback)
         "private-key" => Some("ASI09".into()),
         // ASI10: Insecure Defaults

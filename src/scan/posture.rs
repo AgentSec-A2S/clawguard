@@ -121,7 +121,10 @@ pub fn extract_kind(finding_id: &str) -> String {
 fn weight_for_kind(kind: &str, severity: Severity) -> f64 {
     match kind {
         // Highest risk: full exec without guardrails
-        "exec-security-full" | "acp-approve-all" | "dangerous-disable-device-auth" => 5.0,
+        "exec-security-full"
+        | "acp-approve-all"
+        | "dangerous-disable-device-auth"
+        | "runtime-destructive-action" => 5.0,
         // High risk: approval/sandbox bypasses
         "exec-ask-off" | "sandbox-disabled" | "allowlist-catastrophic-command" => 4.0,
         // Significant risk: weakened boundaries
@@ -138,7 +141,9 @@ fn weight_for_kind(kind: &str, severity: Severity) -> f64 {
         | "hook-shell-exec"
         | "mcp-server-name-typosquat"
         | "mcp-command-changed"
-        | "file-type-mismatch" => 3.0,
+        | "file-type-mismatch"
+        | "runtime-lethal-trifecta-precondition"
+        | "runtime-path-escape" => 3.0,
         // Moderate risk: exposure expansion
         "sandbox-host-fallback"
         | "open-dm-policy"
@@ -152,7 +157,9 @@ fn weight_for_kind(kind: &str, severity: Severity) -> f64 {
         | "unpinned-package"
         | "broad-directory"
         | "mcp-no-lockfile"
-        | "hook-multiple-handlers" => 2.0,
+        | "hook-multiple-handlers"
+        | "runtime-rate-limit-exceeded"
+        | "runtime-prompt-injection-shape" => 2.0,
         // Low risk: config drift / awareness
         "plugin-not-in-allowlist"
         | "plugin-in-denylist"
@@ -296,5 +303,83 @@ mod tests {
         let report = compute_posture(&findings);
         assert_eq!(report.score, 3.0); // Specific weight, not severity default of 3.0
         assert_eq!(report.breakdown[0].kind, "hook-shell-exec");
+    }
+
+    // --- V1.3 Sprint 2 §3 — runtime finding kind weights ---
+
+    #[test]
+    fn runtime_destructive_action_weighted_critical() {
+        let findings = vec![make_finding(
+            "runtime:runtime-destructive-action:session-1:shell",
+            Severity::Critical,
+        )];
+        let report = compute_posture(&findings);
+        assert_eq!(report.score, 5.0);
+        assert_eq!(report.breakdown[0].kind, "runtime-destructive-action");
+    }
+
+    #[test]
+    fn runtime_lethal_trifecta_precondition_weighted_high() {
+        let findings = vec![make_finding(
+            "runtime:runtime-lethal-trifecta-precondition:session-1:fs-read",
+            Severity::High,
+        )];
+        let report = compute_posture(&findings);
+        assert_eq!(report.score, 3.0);
+    }
+
+    #[test]
+    fn runtime_path_escape_weighted_high() {
+        let findings = vec![make_finding(
+            "runtime:runtime-path-escape:session-1:fs-write",
+            Severity::High,
+        )];
+        let report = compute_posture(&findings);
+        assert_eq!(report.score, 3.0);
+    }
+
+    #[test]
+    fn runtime_rate_limit_exceeded_weighted_medium() {
+        let findings = vec![make_finding(
+            "runtime:runtime-rate-limit-exceeded:session-1:shell",
+            Severity::Medium,
+        )];
+        let report = compute_posture(&findings);
+        assert_eq!(report.score, 2.0);
+    }
+
+    #[test]
+    fn runtime_prompt_injection_shape_weighted_medium() {
+        let findings = vec![make_finding(
+            "runtime:runtime-prompt-injection-shape:session-1:fetch",
+            Severity::Medium,
+        )];
+        let report = compute_posture(&findings);
+        assert_eq!(report.score, 2.0);
+    }
+
+    #[test]
+    fn runtime_owasp_mappings_are_registered() {
+        use crate::scan::finding::owasp_asi_for_kind;
+        assert_eq!(
+            owasp_asi_for_kind("runtime-destructive-action").as_deref(),
+            Some("ASI02")
+        );
+        assert_eq!(
+            owasp_asi_for_kind("runtime-path-escape").as_deref(),
+            Some("ASI02")
+        );
+        assert_eq!(
+            owasp_asi_for_kind("runtime-rate-limit-exceeded").as_deref(),
+            Some("ASI02")
+        );
+        assert_eq!(
+            owasp_asi_for_kind("runtime-lethal-trifecta-precondition").as_deref(),
+            Some("ASI06")
+        );
+        assert_eq!(
+            owasp_asi_for_kind("runtime-prompt-injection-shape").as_deref(),
+            Some("ASI07")
+        );
     }
 }

@@ -1,0 +1,138 @@
+# ClawGuard default runtime policy manifest.
+#
+# Lives at ~/.clawguard/policy.toml. Every section is optional; anything
+# you omit inherits the curated defaults below.
+#
+# Ordering (worst-verdict-wins): Allow < Warn < Suspect < Block.
+
+# ---------- Destructive actions ----------
+#
+# Tokenized matchers. Every `tokens` entry must appear as a whitespace-
+# bounded substring in the canonicalized `command + args` for the pattern
+# to fire. `match_in_shell_tunnel = true` lets the pattern still hit when
+# the call is wrapped in `sh -c "..."` / `bash -c "..."`.
+
+[[destructive_actions.patterns]]
+label = "rm-rf-root-or-home"
+tokens = ["rm", "-rf"]
+match_in_shell_tunnel = true
+
+[[destructive_actions.patterns]]
+label = "dd-of-block-device"
+tokens = ["dd", "of=/dev/"]
+match_in_shell_tunnel = true
+
+[[destructive_actions.patterns]]
+label = "mkfs-any"
+tokens = ["mkfs"]
+match_in_shell_tunnel = true
+
+[[destructive_actions.patterns]]
+label = "sql-drop-table"
+tokens = ["DROP", "TABLE"]
+match_in_shell_tunnel = false
+
+[[destructive_actions.patterns]]
+label = "sql-truncate-table"
+tokens = ["TRUNCATE", "TABLE"]
+match_in_shell_tunnel = false
+
+[[destructive_actions.patterns]]
+label = "git-push-force"
+tokens = ["git", "push", "--force"]
+match_in_shell_tunnel = true
+
+[[destructive_actions.patterns]]
+label = "git-push-force-short"
+tokens = ["git", "push", "-f"]
+match_in_shell_tunnel = true
+
+[[destructive_actions.patterns]]
+label = "fork-bomb"
+tokens = [":(){", ":|:&"]
+match_in_shell_tunnel = true
+
+[[destructive_actions.patterns]]
+label = "reverse-shell-bash-tcp"
+tokens = ["bash", "-i", "/dev/tcp/"]
+match_in_shell_tunnel = true
+
+[[destructive_actions.patterns]]
+label = "curl-pipe-shell"
+tokens = ["curl", "|", "sh"]
+match_in_shell_tunnel = true
+
+[[destructive_actions.patterns]]
+label = "wget-pipe-shell"
+tokens = ["wget", "-O-", "|", "sh"]
+match_in_shell_tunnel = true
+
+# ---------- Lethal trifecta precondition ----------
+#
+# Any tool call that reads or writes one of these paths is pre-flagged as
+# a lethal-trifecta building block. Combined with a subsequent exfil tool
+# call, the session risk engine (Sprint 3) escalates.
+
+[lethal_trifecta]
+sensitive_paths = [
+    "~/.ssh",
+    "~/.aws",
+    "~/.config/gcloud",
+    "~/.openclaw/.env",
+    "~/.openclaw/credentials",
+    "~/.openclaw/agents",
+    "~/.clawguard",
+    "/etc/shadow",
+    "/etc/sudoers",
+]
+
+# ---------- Path boundary ----------
+#
+# Paths that a tool call may NEVER write into, even transitively. The
+# adapter resolves write intent from the host runtime's event shape.
+
+[path_boundary]
+forbidden_writes = [
+    "~/.openclaw/hooks",
+    "~/.openclaw/plugins",
+    "~/.openclaw/openclaw.json",
+    "~/.openclaw/exec-approvals.json",
+    "~/.clawguard",
+]
+# If set, tool-call writes outside this root are flagged as path-escape.
+# Leave unset to disable the guard (the session adapter may inject a
+# per-workspace root at SessionStart instead).
+# workspace_root = "~/workspace"
+
+# ---------- Rate limit ----------
+#
+# N destructive-class calls in M seconds trips a Medium finding. The
+# counter is per-session and the window is a sliding ring buffer.
+
+[rate_limit]
+destructive_per_window = 5
+window_seconds = 60
+
+# ---------- Prompt-injection shape ----------
+#
+# Weighted substring scan on tool RESULTS (post-call only). Every match
+# contributes 1 point; hitting `score_threshold` emits a Suspect finding.
+
+[prompt_injection]
+score_threshold = 3
+role_override_markers = [
+    "<|system|>",
+    "<|im_start|>system",
+    "[SYSTEM]",
+    "###system",
+]
+instruction_override_phrases = [
+    "ignore previous instructions",
+    "ignore the above",
+    "disregard the above",
+    "forget everything",
+    "you are now",
+    "new instructions:",
+    "system override",
+    "actually, the user wants",
+]

@@ -4,6 +4,7 @@ pub mod config;
 pub mod daemon;
 pub mod discovery;
 pub mod notify;
+pub mod runtime;
 pub mod scan;
 pub mod state;
 pub mod ui;
