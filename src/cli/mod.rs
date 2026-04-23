@@ -97,6 +97,23 @@ enum Commands {
         #[command(subcommand)]
         command: PolicyCommands,
     },
+    /// Runtime adapter subprocess invoked by host plugins.
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RuntimeCommands {
+    /// Run the OpenClaw hook broker: reads one JSON event per line on
+    /// stdin, writes one JSON verdict per line on stdout.
+    Broker {
+        /// Override the policy manifest path. Defaults to
+        /// `~/.clawguard/policy.toml` (or the built-in defaults if absent).
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -350,6 +367,7 @@ pub fn run() -> ExitCode {
         Some(Commands::Stats(ref args)) => run_stats_command(&cli, args),
         Some(Commands::Posture) => run_posture_command(&cli),
         Some(Commands::Policy { ref command }) => run_policy_command(&cli, command),
+        Some(Commands::Runtime { ref command }) => run_runtime_command(&cli, command),
         None => run_root_command(&cli),
     }
 }
@@ -1388,6 +1406,49 @@ fn run_policy_command(cli: &Cli, command: &PolicyCommands) -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+    }
+}
+
+fn run_runtime_command(_cli: &Cli, command: &RuntimeCommands) -> ExitCode {
+    use crate::runtime::adapter::openclaw::{run_broker, ClawguardPolicyEngine};
+    use crate::runtime::policy::manifest::{default_manifest, load_manifest, ManifestHandle};
+    use std::io::{stdin, stdout, BufReader, BufWriter};
+
+    match command {
+        RuntimeCommands::Broker { manifest } => {
+            let home = resolve_home_dir();
+            let default_path = home.join(".clawguard").join("policy.toml");
+            let target = manifest.clone().unwrap_or(default_path);
+            let manifest_loaded = if target.exists() {
+                let root = target
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| home.join(".clawguard"));
+                match load_manifest(&target, &root) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        eprintln!(
+                            "clawguard runtime broker: failed to load {}: {e}. \
+                             Falling back to built-in defaults.",
+                            target.display()
+                        );
+                        default_manifest()
+                    }
+                }
+            } else {
+                default_manifest()
+            };
+            let engine = ClawguardPolicyEngine::new(ManifestHandle::new(manifest_loaded));
+            let stdin_guard = stdin().lock();
+            let stdout_guard = stdout().lock();
+            let reader = BufReader::new(stdin_guard);
+            let writer = BufWriter::new(stdout_guard);
+            if let Err(e) = run_broker(reader, writer, &engine) {
+                eprintln!("clawguard runtime broker: I/O error: {e}");
+                return ExitCode::FAILURE;
+            }
+            ExitCode::SUCCESS
         }
     }
 }

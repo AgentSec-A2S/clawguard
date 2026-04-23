@@ -1,0 +1,36 @@
+{
+  "id": "clawguard-runtime",
+  "name": "ClawGuard Runtime Guard",
+  "version": "0.1.0",
+  "description": "Tier-1 deterministic runtime policy for OpenClaw tool calls. Spawns the clawguard runtime broker subprocess and blocks catastrophic actions (rm -rf, fork bomb, DROP TABLE, ...) before they execute.",
+  "author": "AgentSec-A2S",
+  "homepage": "https://github.com/AgentSec-A2S/clawguard",
+  "entry": "index.js",
+  "capabilities": [],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "clawguardBin": {
+        "type": "string",
+        "description": "Path to the clawguard binary. Defaults to `clawguard` on PATH."
+      },
+      "manifestPath": {
+        "type": "string",
+        "description": "Override policy manifest. Defaults to ~/.clawguard/policy.toml (built-in defaults if missing)."
+      },
+      "logLevel": {
+        "type": "string",
+        "enum": ["silent", "info", "debug"],
+        "default": "info",
+        "description": "Stderr log verbosity for the plugin bridge."
+      },
+      "bypassTools": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": [],
+        "description": "Tool names to skip (pass-through without policy evaluation). Use sparingly."
+      }
+    }
+  }
+}

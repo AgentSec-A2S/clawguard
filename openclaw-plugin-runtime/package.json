@@ -1,0 +1,8 @@
+{
+  "name": "@clawguard/openclaw-plugin-runtime",
+  "version": "0.1.0",
+  "description": "OpenClaw runtime guard plugin: deterministic Tier-1 policy evaluation via the clawguard broker subprocess.",
+  "main": "index.js",
+  "author": "AgentSec-A2S",
+  "license": "MIT"
+}
