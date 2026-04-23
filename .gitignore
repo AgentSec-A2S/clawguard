@@ -1,1 +1,4 @@
 /target
+
+# Local static-analysis scan output (semgrep-scanner agent drops /raw, /results, rulesets.txt here)
+static_analysis_semgrep_*/
