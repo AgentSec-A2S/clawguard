@@ -265,11 +265,31 @@ fn merge_result_and_error(result: Option<&str>, error: Option<&str>) -> Option<S
 /// Allow + stderr marker, never a host crash.
 pub fn dispatch<E: PolicyEngine>(engine: &E, event: &OpenClawHookEvent) -> AdapterResponse {
     let payload = event_to_payload(event);
+    // Phase routing is strict: a `session_start` / `session_end` event
+    // that carries a non-empty tool_name + params would otherwise
+    // skate past every Tier-1 rule (phase confusion). We treat any
+    // session-phase event that LOOKS like a tool call as a malformed
+    // payload and route it through the pre-call pipeline so a
+    // destructive match still fires. Empty session-phase events (the
+    // legitimate SessionStart / SessionEnd shape) short-circuit Allow.
     let result = catch_unwind(AssertUnwindSafe(|| match payload.phase {
         HookPhase::BeforeToolCall => engine.evaluate_pre_tool_call(&payload),
         HookPhase::AfterToolCall => engine.evaluate_post_tool_call(&payload),
-        // SessionStart / SessionEnd currently have no rules; return Allow.
-        HookPhase::SessionStart | HookPhase::SessionEnd => PolicyVerdict::allow(),
+        HookPhase::SessionStart | HookPhase::SessionEnd => {
+            let looks_like_tool_call = !payload.tool_name.is_empty()
+                && !payload.args_raw.is_empty()
+                && payload.args_raw != "{}"
+                && payload.args_raw != "null";
+            if looks_like_tool_call {
+                eprintln!(
+                    "clawguard-adapter-phase-mismatch tool={} phase={:?}",
+                    payload.tool_name, payload.phase
+                );
+                engine.evaluate_pre_tool_call(&payload)
+            } else {
+                PolicyVerdict::allow()
+            }
+        }
     }));
     match result {
         Ok(verdict) => AdapterResponse::from_verdict(&verdict),
@@ -478,6 +498,50 @@ mod tests {
             "runtime-destructive-action"
         );
         assert_eq!(kind_from_finding_id("malformed"), "");
+    }
+
+    #[test]
+    fn phase_confusion_session_start_with_tool_call_is_still_evaluated() {
+        // An adversary that labels `phase: "session_start"` but ships a
+        // full tool-call payload must not slip past every Tier-1 rule.
+        // The dispatcher treats a non-empty tool_name + non-trivial
+        // params on a session phase as malformed and routes through
+        // evaluate_pre anyway.
+        let engine = engine_with_defaults();
+        let event = OpenClawHookEvent {
+            phase: OpenClawHookPhase::SessionStart,
+            session_id: Some("s1".into()),
+            agent_id: None,
+            run_id: None,
+            tool_call_id: None,
+            tool_name: "shell".into(),
+            params: serde_json::json!({"command": "rm -rf ~"}),
+            result: None,
+            error: None,
+        };
+        let r = dispatch(&engine, &event);
+        assert_eq!(r.decision, "block");
+        assert!(r.block);
+        assert!(r.finding_kinds.iter().any(|k| k == "runtime-destructive-action"));
+    }
+
+    #[test]
+    fn benign_session_start_without_tool_data_stays_allow() {
+        let engine = engine_with_defaults();
+        let event = OpenClawHookEvent {
+            phase: OpenClawHookPhase::SessionStart,
+            session_id: Some("s1".into()),
+            agent_id: None,
+            run_id: None,
+            tool_call_id: None,
+            tool_name: "".into(),
+            params: serde_json::json!({}),
+            result: None,
+            error: None,
+        };
+        let r = dispatch(&engine, &event);
+        assert_eq!(r.decision, "allow");
+        assert!(!r.block);
     }
 
     #[test]
