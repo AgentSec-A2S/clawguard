@@ -6,6 +6,4 @@
 //! back into the host's native result shape. No rule logic lives here.
 
 pub mod common;
-
-// Adapter implementations land in Sprint 2 §5 and Sprint 3.
-// pub mod openclaw;
+pub mod openclaw;
