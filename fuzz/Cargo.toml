@@ -9,6 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+serde_json = "1"
+toml = "0.8"
 
 [dependencies.clawguard]
 path = ".."
@@ -30,6 +32,27 @@ bench = false
 [[bin]]
 name = "fuzz_iso_timestamp"
 path = "fuzz_targets/fuzz_iso_timestamp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ndjson_event"
+path = "fuzz_targets/fuzz_ndjson_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_policy_toml"
+path = "fuzz_targets/fuzz_policy_toml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_canonicalize_args"
+path = "fuzz_targets/fuzz_canonicalize_args.rs"
 test = false
 doc = false
 bench = false

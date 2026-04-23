@@ -57,19 +57,49 @@ impl HookPayload {
 }
 
 /// Canonicalize a command / argument string so equivalent invocations hash
-/// identically. Applies, in order:
+/// identically. Each pass applies, in order:
 ///
 /// 1. Unicode NFKC normalization (compatibility-fold fullwidth lookalikes
 ///    and other visual collisions).
 /// 2. Zero-width / BOM stripping (ZWSP, ZWJ, BOM).
-/// 3. Single-pass percent-decode of `%HH` triplets.
+/// 3. Percent-decode of `%HH` triplets (single pass per outer iteration).
 /// 4. Whitespace collapse — runs of any Unicode whitespace become a single
 ///    ASCII space; leading/trailing whitespace dropped.
 ///
-/// This function is deliberately conservative. It does NOT try to unwrap
-/// `sh -c` / `bash -c` — that's the rule layer's job because the unwrap
-/// strategy is rule-specific.
+/// The full pipeline is then re-applied until the output reaches a fixed
+/// point (bounded at [`MAX_CANONICALIZE_PASSES`] iterations). Looping the
+/// whole pipeline — not just the percent-decode — defeats two classes of
+/// bypass:
+///
+/// * Pure double-encoding: `5%5%4545` → pass 1 → `5%5E45` → pass 2 → `5^45`.
+/// * Decode-then-compose: percent-decode can emit a byte that, together
+///   with an adjacent combining character, NFKC-recomposes on the next
+///   pass — e.g. `%77` + `\u{308}` → `w\u{308}` → `ẅ`. A single pass would
+///   let `canonicalize(canonicalize(x)) ≠ canonicalize(x)`.
+///
+/// This function is deliberately conservative about `sh -c` / `bash -c`
+/// unwrapping — it does NOT try to unwrap them, that's the rule layer's
+/// job because the unwrap strategy is rule-specific.
 pub fn canonicalize_args(raw: &str) -> String {
+    let mut current = raw.to_string();
+    for _ in 0..MAX_CANONICALIZE_PASSES {
+        let next = canonicalize_once(&current);
+        if next == current {
+            return next;
+        }
+        current = next;
+    }
+    current
+}
+
+/// Upper bound on canonicalize pipeline iterations. Each pass can only
+/// shrink the string (decode consumes 2 bytes per triplet, NFKC
+/// composition reduces combining pairs, whitespace collapse removes
+/// characters), so convergence is guaranteed; this bound is a defence
+/// against pathological inputs that somehow cycle without shrinking.
+const MAX_CANONICALIZE_PASSES: usize = 8;
+
+fn canonicalize_once(raw: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
 
     let nfkc: String = raw.nfkc().collect();
@@ -92,8 +122,10 @@ fn is_zero_width(c: char) -> bool {
     )
 }
 
-/// Percent-decode exactly once (does not recurse on `%2525`). Invalid
-/// triplets are left verbatim.
+/// Percent-decode exactly once. Invalid triplets are left verbatim.
+/// Prefer [`percent_decode_to_fixed_point`] for canonicalization — single-pass
+/// decoding is NOT idempotent under composition, see fuzz target
+/// `fuzz_canonicalize_args`.
 fn percent_decode_once(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -193,17 +225,49 @@ mod tests {
         assert_eq!(canonicalize_args(sneaky), "rm -rf ~");
     }
 
+    // Regression — `fuzz_canonicalize_args` found that single-pass
+    // percent-decode produces a new `%HH` triplet for this input
+    // (`5%5%4545` → `5%5E45` → `5^45`), which meant the rule engine
+    // and a downstream consumer (e.g. an HTTP client that would
+    // percent-decode a URL arg) could see different strings. We now
+    // loop to fixed point so `canonicalize_args(canonicalize_args(x))
+    // == canonicalize_args(x)` holds for arbitrary input.
+    #[test]
+    fn canonicalize_is_idempotent_under_double_percent_encoding() {
+        let input = "5%5%4545";
+        let once = canonicalize_args(input);
+        let twice = canonicalize_args(&once);
+        assert_eq!(once, twice, "canonicalize must be idempotent; once={once:?}, twice={twice:?}");
+        // Also pin the canonical value — a future reader debugging
+        // this should see exactly what the decoded form looks like.
+        assert_eq!(once, "5^45");
+    }
+
+    #[test]
+    fn canonicalize_handles_layered_percent_encoding_of_rm() {
+        // `%2572m` single-pass decodes to `%72m`, which single-pass
+        // decodes to `rm`. A single-pass canonicalize would let this
+        // string slip past token matchers that compare against `rm`.
+        // With fixed-point decode, the canonical form collapses to
+        // `rm`.
+        assert_eq!(canonicalize_args("%2572m -rf ~"), "rm -rf ~");
+    }
+
     #[test]
     fn canonicalize_collapses_whitespace() {
         assert_eq!(canonicalize_args("  rm   -rf    ~  "), "rm -rf ~");
     }
 
     #[test]
-    fn canonicalize_percent_decodes_once() {
-        // %20 = space; ensure we decode exactly one layer.
+    fn canonicalize_percent_decodes_to_fixed_point() {
+        // %20 = space; simple single-layer decode.
         assert_eq!(canonicalize_args("rm%20-rf%20~"), "rm -rf ~");
-        // %2525 should decode to %25, not to %.
-        assert_eq!(canonicalize_args("a%2525b"), "a%25b");
+        // %2525 now decodes all the way: %2525 → %25 → %.
+        // (Policy change in Sprint 2 §7 — single-pass decode was not
+        // idempotent and allowed double-encoding bypasses; see the
+        // `canonicalize_is_idempotent_under_double_percent_encoding`
+        // regression test and `fuzz_canonicalize_args` for the finding.)
+        assert_eq!(canonicalize_args("a%2525b"), "a%b");
     }
 
     #[test]
