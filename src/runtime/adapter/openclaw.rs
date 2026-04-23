@@ -18,9 +18,10 @@
 //! `clawguard-adapter-panic` marker logged to stderr. A panicking rule
 //! must never wedge the host runtime.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +29,15 @@ use super::common::{canonicalize_args, HookPayload, HookPhase};
 use crate::runtime::policy::manifest::ManifestHandle;
 use crate::runtime::policy::rules::{evaluate_post, evaluate_pre, RateLimiter};
 use crate::runtime::policy::{PolicyDecision, PolicyEngine, PolicyVerdict};
+
+/// Soft cap on the number of distinct session rate limiters kept in
+/// memory per broker process. A runaway caller spraying unique
+/// `session_id` values would otherwise grow the map unboundedly. When
+/// the cap is exceeded we drop the first entry we iterate — acceptable
+/// because destructive-class rate limits are a soft signal, not a hard
+/// security boundary (the Block decision is already handled by the
+/// destructive_action_check rule which runs first).
+const MAX_TRACKED_SESSIONS: usize = 1024;
 
 /// Phase discriminator for [`OpenClawHookEvent`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,30 +155,57 @@ fn kind_from_finding_id(id: &str) -> String {
     id.splitn(3, ':').nth(1).unwrap_or("").to_string()
 }
 
-/// Shared engine wiring a [`ManifestHandle`] + [`RateLimiter`] to the
-/// Tier-1 rule set.
+/// Shared engine wiring a [`ManifestHandle`] + per-session
+/// [`RateLimiter`]s to the Tier-1 rule set.
+///
+/// Rate limiting is advertised as session-local in the rules module doc.
+/// One broker process can (and in tests does) receive events from
+/// multiple `session_id`s, so a single shared limiter would let an
+/// attacker rotate session IDs to dodge the rate cap. The engine keeps a
+/// `HashMap<session_id, Arc<RateLimiter>>` and looks up the right
+/// limiter per call.
 pub struct ClawguardPolicyEngine {
     manifest: ManifestHandle,
-    rate_limiter: RateLimiter,
+    limiters: Mutex<HashMap<String, Arc<RateLimiter>>>,
 }
 
 impl ClawguardPolicyEngine {
     pub fn new(manifest: ManifestHandle) -> Self {
         Self {
             manifest,
-            rate_limiter: RateLimiter::new(),
+            limiters: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn manifest(&self) -> &ManifestHandle {
         &self.manifest
     }
+
+    /// Resolve the per-session rate limiter, creating it lazily. The
+    /// map is bounded by [`MAX_TRACKED_SESSIONS`]; when full a single
+    /// victim entry is dropped to make room (soft cap — see the const's
+    /// doc for why this is safe).
+    fn limiter_for(&self, session_id: &str) -> Arc<RateLimiter> {
+        let mut map = self.limiters.lock().expect("limiters lock poisoned");
+        if let Some(existing) = map.get(session_id) {
+            return existing.clone();
+        }
+        if map.len() >= MAX_TRACKED_SESSIONS {
+            if let Some(victim) = map.keys().next().cloned() {
+                map.remove(&victim);
+            }
+        }
+        let limiter = Arc::new(RateLimiter::new());
+        map.insert(session_id.to_string(), limiter.clone());
+        limiter
+    }
 }
 
 impl PolicyEngine for ClawguardPolicyEngine {
     fn evaluate_pre_tool_call(&self, payload: &HookPayload) -> PolicyVerdict {
         let m = self.manifest.snapshot();
-        evaluate_pre(payload, &m, Some(&self.rate_limiter))
+        let limiter = self.limiter_for(&payload.session_id);
+        evaluate_pre(payload, &m, Some(limiter.as_ref()))
     }
 
     fn evaluate_post_tool_call(&self, payload: &HookPayload) -> PolicyVerdict {
@@ -441,5 +478,54 @@ mod tests {
             "runtime-destructive-action"
         );
         assert_eq!(kind_from_finding_id("malformed"), "");
+    }
+
+    #[test]
+    fn rate_limiter_is_session_scoped_across_distinct_sessions() {
+        // Fire enough Warn-worthy (but non-destructive, non-block)
+        // invocations per session to approach the rate limit, but
+        // interleave with a different session_id. The limiters must be
+        // independent — neither session should trip on a call count
+        // that's only high in aggregate, not within one session.
+        //
+        // We use `dd of=/dev/null` (a destructive-class match per the
+        // default manifest's `dd-of-block-device` pattern) — wait, that
+        // one fires destructive-action and would Block first. We need a
+        // call that is counted by the rate limiter but not blocked. The
+        // simplest: drive destructive calls straight through — the
+        // rate-limit rule layers on top and the rate counter reflects
+        // the per-session history regardless of the Block verdict.
+        //
+        // Rather than fight the layering, assert the lower-level
+        // property directly: distinct session_ids resolve to different
+        // RateLimiter Arcs.
+        let engine = engine_with_defaults();
+        let a = engine.limiter_for("session-a");
+        let b = engine.limiter_for("session-b");
+        assert!(!Arc::ptr_eq(&a, &b), "sessions must get independent limiters");
+        let a2 = engine.limiter_for("session-a");
+        assert!(
+            Arc::ptr_eq(&a, &a2),
+            "the same session_id must resolve to the same limiter instance"
+        );
+    }
+
+    #[test]
+    fn rate_limiter_map_respects_soft_cap() {
+        // Exceeding MAX_TRACKED_SESSIONS must not grow unboundedly; one
+        // existing entry is evicted to make room for the new one.
+        let engine = engine_with_defaults();
+        // Fill to the cap.
+        for i in 0..MAX_TRACKED_SESSIONS {
+            engine.limiter_for(&format!("s-{i}"));
+        }
+        {
+            let map = engine.limiters.lock().unwrap();
+            assert_eq!(map.len(), MAX_TRACKED_SESSIONS);
+        }
+        engine.limiter_for("one-more");
+        let map = engine.limiters.lock().unwrap();
+        assert_eq!(map.len(), MAX_TRACKED_SESSIONS);
+        assert!(map.contains_key("one-more"));
     }
 }
