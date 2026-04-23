@@ -257,6 +257,41 @@ fn partial_detection_keeps_accessible_targets_and_reports_warning() {
     assert_eq!(runtime.warnings[0].path, blocked_auth_profile);
 }
 
+#[test]
+fn discovers_plugin_bundled_dot_mcp_json_files() {
+    let home = TempDir::new().expect("temp home should be created");
+    let state_dir = home.path().join(".openclaw");
+    let config_path = state_dir.join("openclaw.json");
+    let plugin_a_mcp = state_dir.join("extensions").join("claude-mem").join(".mcp.json");
+    let plugin_b_mcp = state_dir.join("extensions").join("typo-squatter").join(".mcp.json");
+
+    fs::create_dir_all(plugin_a_mcp.parent().unwrap()).unwrap();
+    fs::create_dir_all(plugin_b_mcp.parent().unwrap()).unwrap();
+    fs::write(&config_path, "{ }\n").unwrap();
+    fs::write(&plugin_a_mcp, "{ mcpServers: {} }\n").unwrap();
+    fs::write(&plugin_b_mcp, "{ mcpServers: {} }\n").unwrap();
+
+    let runtime = discover_openclaw(&DiscoveryOptions {
+        home_dir: Some(home.path().to_path_buf()),
+        ..DiscoveryOptions::default()
+    })
+    .expect("openclaw should be detected");
+
+    let mcp_paths = target_paths(&runtime, ScanDomain::Mcp);
+    assert!(
+        mcp_paths.contains(&config_path),
+        "openclaw.json must still be an Mcp scan target"
+    );
+    assert!(
+        mcp_paths.contains(&plugin_a_mcp),
+        "plugin-bundled .mcp.json (claude-mem) must be discovered"
+    );
+    assert!(
+        mcp_paths.contains(&plugin_b_mcp),
+        "plugin-bundled .mcp.json (typo-squatter) must be discovered"
+    );
+}
+
 fn target_paths(runtime: &DetectedRuntime, domain: ScanDomain) -> Vec<PathBuf> {
     runtime
         .targets

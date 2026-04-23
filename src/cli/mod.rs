@@ -1738,31 +1738,38 @@ fn render_scan_output(
 ) -> ExitCode {
     let evidence = collect_scan_evidence(config, discovery);
 
-    // Best-effort provenance check: if state DB exists, load baselines and generate
-    // provenance findings. If no DB, skip — provenance is advisory, not blocking.
+    // Best-effort baseline-driven findings: provenance + mcp-command-changed.
+    // If state DB is missing both are silently skipped (advisory, not blocking).
     let home_dir = resolve_home_dir();
     let db_path = state_db_path_for_home(&home_dir);
-    let provenance_findings = if db_path.exists() {
+    let (provenance_findings, command_changed_findings) = if db_path.exists() {
         open_state_store_for_home(&home_dir)
             .ok()
             .map(|state| {
                 let baselines = state.store.list_baselines().unwrap_or_default();
-                crate::scan::baseline::provenance_findings_for_artifacts(
+                let provenance = crate::scan::baseline::provenance_findings_for_artifacts(
                     &baselines,
                     &evidence.artifacts,
-                )
+                );
+                let cmd_changed =
+                    crate::scan::mcp::command_changed_findings_from_baseline_artifacts(
+                        &baselines,
+                        &evidence.artifacts,
+                    );
+                (provenance, cmd_changed)
             })
             .unwrap_or_default()
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
-    let result = if provenance_findings.is_empty() {
+    let result = if provenance_findings.is_empty() && command_changed_findings.is_empty() {
         evidence.result
     } else {
         ScanResult::from_batches(vec![
             evidence.result.findings().to_vec(),
             provenance_findings,
+            command_changed_findings,
         ])
     };
 

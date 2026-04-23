@@ -69,8 +69,16 @@ fn openclaw_mcp_target_reuses_main_config_instead_of_fake_directory() {
         .map(|pattern| pattern.path.as_str())
         .collect();
 
-    assert_eq!(paths, vec!["~/.openclaw/openclaw.json"]);
-    assert!(!paths.iter().any(|path| path.contains("/mcp")));
+    assert!(
+        paths.contains(&"~/.openclaw/openclaw.json"),
+        "main config must still be an MCP target: {paths:?}"
+    );
+    assert!(
+        paths.contains(&"~/.openclaw/extensions/*/.mcp.json"),
+        "plugin-bundled .mcp.json glob must be an MCP target: {paths:?}"
+    );
+    // Guard against accidentally reintroducing a fake ~/.openclaw/mcp directory.
+    assert!(!paths.iter().any(|path| *path == "~/.openclaw/mcp"));
 }
 
 #[test]

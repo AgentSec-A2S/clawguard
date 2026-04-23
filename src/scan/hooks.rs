@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use super::file_type::{detect_binary_signature, BinarySignature};
 use super::finding::owasp_asi_for_kind;
 use super::{Finding, FindingCategory, Fixability, RecommendedAction, RuntimeConfidence, Severity};
 
@@ -26,6 +27,7 @@ pub fn scan_hooks_dirs(hooks_dirs: &[PathBuf], max_file_size_bytes: u64) -> Hook
         if !dir.exists() || !dir.is_dir() {
             continue;
         }
+        let boundary = fs::canonicalize(dir).unwrap_or_else(|_| dir.clone());
         let Ok(entries) = fs::read_dir(dir) else {
             continue;
         };
@@ -34,24 +36,38 @@ pub fn scan_hooks_dirs(hooks_dirs: &[PathBuf], max_file_size_bytes: u64) -> Hook
             if !hook_dir.is_dir() {
                 continue;
             }
-            scan_single_hook(&hook_dir, max_file_size_bytes, &mut output);
+            scan_single_hook(&hook_dir, &boundary, max_file_size_bytes, &mut output);
         }
     }
     output
 }
 
-fn scan_single_hook(hook_dir: &Path, max_file_size_bytes: u64, output: &mut HookScanOutput) {
-    // Hash HOOK.md metadata if present (metadata drift detection)
+fn scan_single_hook(
+    hook_dir: &Path,
+    scan_boundary: &Path,
+    max_file_size_bytes: u64,
+    output: &mut HookScanOutput,
+) {
+    // Phase 1 — byte-first integrity sweep: flag any file in the hook dir
+    // that claims a text-like extension (or no extension) but begins with a
+    // native executable header.
+    file_type_mismatch_sweep(hook_dir, scan_boundary, max_file_size_bytes, output);
+
+    // Phase 2 — HOOK.md metadata hash (drift detection).
     let hook_md_path = hook_dir.join("HOOK.md");
-    if let Ok(md_contents) = fs::read_to_string(&hook_md_path) {
-        output.artifacts.push(HookArtifact {
-            path: resolved_path_string(&hook_md_path),
-            sha256: sha256_hex(md_contents.as_bytes()),
-        });
+    if path_within_boundary(&hook_md_path, scan_boundary)
+        && detect_binary_signature(&hook_md_path).is_none()
+    {
+        if let Ok(md_contents) = fs::read_to_string(&hook_md_path) {
+            output.artifacts.push(HookArtifact {
+                path: resolved_path_string(&hook_md_path),
+                sha256: sha256_hex(md_contents.as_bytes()),
+            });
+        }
     }
 
-    // Handler file priority matches upstream OpenClaw loader order:
-    // handler.ts → handler.js → index.ts → index.js
+    // Phase 3 — JS handler content findings. Priority matches upstream
+    // OpenClaw loader order: handler.ts → handler.js → index.ts → index.js.
     let handler_names = [
         "handler.ts",
         "handler.js",
@@ -61,9 +77,32 @@ fn scan_single_hook(hook_dir: &Path, max_file_size_bytes: u64, output: &mut Hook
         "handler.cjs",
     ];
 
-    for name in &handler_names {
+    // Enumerate ALL present handler files in priority order before picking one,
+    // so we can warn about shadowed siblings. An attacker who plants a clean
+    // handler.ts (wins the loader) plus a malicious handler.js would otherwise
+    // leave the malicious file content-unscanned.
+    let present_handlers: Vec<&&str> = handler_names
+        .iter()
+        .filter(|name| hook_dir.join(name).is_file())
+        .collect();
+
+    if present_handlers.len() > 1 {
+        let executed = present_handlers[0];
+        let shadowed: Vec<String> = present_handlers[1..]
+            .iter()
+            .map(|name| (**name).to_string())
+            .collect();
+        let hook_label = resolved_path_string(hook_dir);
+        output.findings.push(build_multiple_handlers_finding(
+            &hook_label,
+            executed,
+            &shadowed,
+        ));
+    }
+
+    for name in present_handlers {
         let handler_path = hook_dir.join(name);
-        if !handler_path.is_file() {
+        if !path_within_boundary(&handler_path, scan_boundary) {
             continue;
         }
         let Ok(meta) = handler_path.metadata() else {
@@ -71,6 +110,11 @@ fn scan_single_hook(hook_dir: &Path, max_file_size_bytes: u64, output: &mut Hook
         };
         if meta.len() > max_file_size_bytes {
             continue;
+        }
+        // Byte-first gate: if this handler is a disguised binary, Phase 1
+        // already emitted the file-type-mismatch finding; skip UTF-8 decode.
+        if detect_binary_signature(&handler_path).is_some() {
+            break;
         }
         let Ok(contents) = fs::read_to_string(&handler_path) else {
             continue;
@@ -85,8 +129,125 @@ fn scan_single_hook(hook_dir: &Path, max_file_size_bytes: u64, output: &mut Hook
         output
             .findings
             .extend(findings_for_handler(&contents, &resolved));
-        // Only scan the handler OpenClaw would actually execute (first match)
+        // Only the first (highest-priority) handler is actually executed by
+        // OpenClaw. We have already warned about the shadowed siblings above.
         break;
+    }
+}
+
+fn file_type_mismatch_sweep(
+    hook_dir: &Path,
+    scan_boundary: &Path,
+    max_file_size_bytes: u64,
+    output: &mut HookScanOutput,
+) {
+    let Ok(entries) = fs::read_dir(hook_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        if meta.len() > max_file_size_bytes {
+            continue;
+        }
+        if !is_hook_text_candidate(&path) {
+            continue;
+        }
+        if !path_within_boundary(&path, scan_boundary) {
+            continue;
+        }
+        if let Some(signature) = detect_binary_signature(&path) {
+            let resolved = resolved_path_string(&path);
+            output
+                .findings
+                .push(build_file_type_mismatch_finding(&resolved, signature));
+        }
+    }
+}
+
+fn is_hook_text_candidate(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        None => true, // extensionless hook scripts are candidates
+        Some(ext) => matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "sh" | "bash"
+                | "zsh"
+                | "fish"
+                | "py"
+                | "js"
+                | "mjs"
+                | "cjs"
+                | "ts"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "toml"
+                | "md"
+                | "txt"
+        ),
+    }
+}
+
+fn path_within_boundary(path: &Path, boundary: &Path) -> bool {
+    let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    resolved.starts_with(boundary)
+}
+
+fn build_file_type_mismatch_finding(path: &str, signature: BinarySignature) -> Finding {
+    Finding {
+        id: format!("hooks:file-type-mismatch:{path}"),
+        detector_id: "file-type".to_string(),
+        severity: Severity::High,
+        category: FindingCategory::Config,
+        runtime_confidence: RuntimeConfidence::ActiveRuntime,
+        path: path.to_string(),
+        line: None,
+        evidence: Some(format!("signature={}", signature.as_kind())),
+        plain_english_explanation: "This hook file has a text-like extension but starts with a native executable header. A disguised binary in a hook dir is a high-signal supply-chain integrity red flag.".to_string(),
+        recommended_action: RecommendedAction {
+            label: "Inspect this file by hand; restore the legitimate hook content or delete it"
+                .to_string(),
+            command_hint: None,
+        },
+        fixability: Fixability::Manual,
+        fix: None,
+        owasp_asi: owasp_asi_for_kind("file-type-mismatch"),
+    }
+}
+
+fn build_multiple_handlers_finding(
+    hook_path: &str,
+    executed: &str,
+    shadowed: &[String],
+) -> Finding {
+    let shadowed_list = shadowed.join(", ");
+    Finding {
+        id: format!("hook-handler:hook-multiple-handlers:{hook_path}"),
+        detector_id: "hook-handler".to_string(),
+        severity: Severity::Medium,
+        category: FindingCategory::Config,
+        runtime_confidence: RuntimeConfidence::ActiveRuntime,
+        path: hook_path.to_string(),
+        line: None,
+        evidence: Some(format!(
+            "executed={executed} shadowed=[{shadowed_list}]"
+        )),
+        plain_english_explanation:
+            "This hook dir has multiple handler files that match the OpenClaw loader priority list. Only the highest-priority file is executed, but a shadowed sibling can still be swapped into place by a later edit without tripping content scans — a classic hide-the-payload pattern.".to_string(),
+        recommended_action: RecommendedAction {
+            label:
+                "Remove the shadowed handler file(s) so only the intended entry point exists"
+                    .to_string(),
+            command_hint: None,
+        },
+        fixability: Fixability::Manual,
+        fix: None,
+        owasp_asi: owasp_asi_for_kind("hook-multiple-handlers"),
     }
 }
 

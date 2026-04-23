@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use super::file_type::{detect_binary_signature, BinarySignature};
+use super::finding::owasp_asi_for_kind;
 use super::{Finding, FindingCategory, Fixability, RecommendedAction, RuntimeConfidence, Severity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,11 +47,36 @@ pub fn scan_skill_dir(
     let mut findings = Vec::new();
     let mut artifacts = Vec::new();
 
+    // Precompute the canonicalized scan boundary so symlink escapes out of the
+    // scan root can be recognized and skipped (must not inspect the target).
+    let boundary = canonicalized_boundary(dir);
+
     for file_path in files {
+        let resolved_path = resolved_path_string(&file_path);
+
+        // Boundary check: if the file resolves outside the scan root, skip it
+        // entirely — we must not inspect a symlink target outside the scan
+        // boundary even for integrity checks.
+        if let Some(ref boundary) = boundary {
+            let canonical = fs::canonicalize(&file_path).unwrap_or_else(|_| file_path.clone());
+            if !canonical.starts_with(boundary) {
+                continue;
+            }
+        }
+
+        // Byte-first integrity: if the file claims a text-like skill extension
+        // but begins with a native executable header, emit file-type-mismatch
+        // and skip the UTF-8 decode. This prevents a disguised binary from
+        // being silently dropped by `read_to_string` and sneaking past the
+        // skill content scanner.
+        if let Some(signature) = detect_binary_signature(&file_path) {
+            findings.push(build_file_type_mismatch_finding(&resolved_path, signature));
+            continue;
+        }
+
         let Ok(contents) = fs::read_to_string(&file_path) else {
             continue;
         };
-        let resolved_path = resolved_path_string(&file_path);
 
         let source_hint = detect_source_hint(dir, &file_path);
         let git_provenance = extract_git_provenance(dir, &file_path);
@@ -546,4 +573,25 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+fn build_file_type_mismatch_finding(path: &str, signature: BinarySignature) -> Finding {
+    Finding {
+        id: format!("skills:file-type-mismatch:{path}"),
+        detector_id: "file-type".to_string(),
+        severity: Severity::High,
+        category: FindingCategory::Skills,
+        runtime_confidence: RuntimeConfidence::ActiveRuntime,
+        path: path.to_string(),
+        line: None,
+        evidence: Some(format!("signature={}", signature.as_kind())),
+        plain_english_explanation: "This skill file has a text-like extension but starts with a native executable header. A binary disguised as a skill file is a high-signal supply-chain integrity red flag.".to_string(),
+        recommended_action: RecommendedAction {
+            label: "Inspect this file by hand; restore the legitimate skill content or delete it".to_string(),
+            command_hint: None,
+        },
+        fixability: Fixability::Manual,
+        fix: None,
+        owasp_asi: owasp_asi_for_kind("file-type-mismatch"),
+    }
 }

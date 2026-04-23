@@ -21,6 +21,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 semver = "1"
 sha2 = "0.10"
 toml = "0.8"
+unicode-normalization = "0.1"
 ureq = { version = "2.10", features = ["json"] }
 
 [dev-dependencies]

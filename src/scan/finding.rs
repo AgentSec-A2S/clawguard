@@ -109,7 +109,12 @@ pub fn owasp_asi_for_kind(kind: &str) -> Option<String> {
         | "plugin-in-denylist"
         | "skill-no-provenance"
         | "skill-unapproved-change"
-        | "skill-remote-redirect" => Some("ASI06".into()),
+        | "skill-remote-redirect"
+        | "mcp-no-lockfile"
+        | "mcp-server-name-typosquat"
+        | "mcp-command-changed"
+        | "file-type-mismatch"
+        | "hook-multiple-handlers" => Some("ASI06".into()),
         // ASI07: Prompt Injection
         "hook-allows-unsafe-external-content"
         | "hook-allows-request-session-key"

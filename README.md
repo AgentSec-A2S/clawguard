@@ -1,6 +1,6 @@
 # ClawGuard
 
-**Current version: v1.2.0-beta.3**
+**Current version: v1.2.0-beta.4** (V1.3 Sprint 1 MCP supply-chain hardening shipped 2026-04-21)
 
 > [Why ClawGuard Exists](#why-clawguard-exists) | [Current Features](#current-features) | [What It Checks](#what-it-checks-today) | [How It Works](#how-it-works) | [Requirements](#requirements) | [Install](#install) | [Usage](#first-run-and-usage) | [Notifications](#notifications) | [Output Model](#output-model) | [Scope & Limits](#current-v0-scope-and-limits) | [Development](#development)
 
@@ -163,6 +163,11 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - provenance checks run automatically in both `clawguard scan` and `clawguard watch` pipelines
   - git metadata extracted without spawning subprocesses (parses `.git/config` and `.git/HEAD` directly)
   - handles git worktrees and submodules via `.git` file `gitdir:` indirection, with scan boundary enforcement
+- **V1.3 Sprint 1 (shipped 2026-04-21)** — MCP supply-chain hardening + byte-first artifact integrity:
+  - `mcp-no-lockfile` (Medium, ASI06) — MCP servers launched via npx/pnpm dlx/yarn dlx/bunx/etc. without a pinning lockfile (package-lock.json / pnpm-lock.yaml / yarn.lock / bun.lockb / bun.lock). Covers the full JS launcher matrix and `sh -c` / `bash -c` tunnelled invocations
+  - `mcp-server-name-typosquat` (High, ASI06) — configured MCP server name is a near-match (Damerau–Levenshtein d≤1 for normalized len 5–7, d≤2 for len≥8) of a canonical server on the bundled `data/mcp_server_allowlist.txt` (30+ entries), after NFKC + lowercase + separator-strip normalization. Short names (normalized len < 5) are exempt to keep the rule high-signal
+  - `mcp-command-changed` (High, ASI06) — per-server baseline drift on the resolved `{command, args, url, cwd}` tuple, emitted via a synthetic `mcp-command://<config>#<source>::<name>` artifact so a server switching its launcher binary or cwd shows up as its own finding distinct from generic config drift
+  - `file-type-mismatch` (High, ASI06) — byte-first signature sweep in `skill/` and hook dirs: any file claiming a text-like extension (or extensionless hook) whose first 16 bytes match a native executable header (ELF / PE-MZ / Mach-O MH_MAGIC · MH_MAGIC_64 · MH_CIGAM · MH_CIGAM_64 / fat-universal FAT_MAGIC · FAT_CIGAM). Short-circuits on the binary-extension allowlist (`.node`, `.wasm`, `.so`, `.dylib`, `.dll`, `.exe`, `.bin`, `.o`, `.a`) and enforces scan-boundary symlink-escape guards
 - Permission posture scoring via `clawguard posture`:
   - weighted sum across 33 specific finding kinds with per-kind weights (1–5) and severity-based fallback
   - score bands: Clean → Low → Moderate → Elevated → Critical

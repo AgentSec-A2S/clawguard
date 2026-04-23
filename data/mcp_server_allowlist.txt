@@ -1,0 +1,51 @@
+# Curated allowlist of canonical MCP server names for typosquat detection.
+# Source: official @modelcontextprotocol servers + widely-used third-party servers
+# observed in the wild as of 2026-04.
+#
+# Format: one name per line. Blank lines and lines starting with '#' are ignored.
+# Names are normalized (NFKC + lowercase + separator-collapse to '-') at load
+# time; the file can use any case/separator style.
+#
+# Short names (normalized length < 5) are automatically skipped by the
+# typosquat matcher, so `git`, `time`, and similar are effectively exempt.
+# They are kept here for documentation.
+
+# @modelcontextprotocol official servers
+filesystem
+fetch
+github
+gitlab
+postgres
+sqlite
+memory
+puppeteer
+brave-search
+google-maps
+slack
+everything
+everart
+git
+gdrive
+aws-kb-retrieval
+sequentialthinking
+time
+redis
+google-drive
+
+# Widely-used third-party servers
+playwright
+browserbase
+discord
+kubernetes
+docker
+notion
+linear
+jira
+confluence
+figma
+stripe
+cloudflare
+supabase
+neon
+vercel
+netlify

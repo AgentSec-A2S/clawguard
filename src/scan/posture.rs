@@ -135,7 +135,10 @@ fn weight_for_kind(kind: &str, severity: Severity) -> f64 {
         | "sandbox-dangerous-external-sources"
         | "allowlist-dangerous-executable"
         | "shell_exec"
-        | "hook-shell-exec" => 3.0,
+        | "hook-shell-exec"
+        | "mcp-server-name-typosquat"
+        | "mcp-command-changed"
+        | "file-type-mismatch" => 3.0,
         // Moderate risk: exposure expansion
         "sandbox-host-fallback"
         | "open-dm-policy"
@@ -147,7 +150,9 @@ fn weight_for_kind(kind: &str, severity: Severity) -> f64 {
         | "allowlist-interpreter"
         | "launcher"
         | "unpinned-package"
-        | "broad-directory" => 2.0,
+        | "broad-directory"
+        | "mcp-no-lockfile"
+        | "hook-multiple-handlers" => 2.0,
         // Low risk: config drift / awareness
         "plugin-not-in-allowlist"
         | "plugin-in-denylist"

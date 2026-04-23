@@ -1,6 +1,7 @@
 pub mod baseline;
 pub mod bootstrap;
 pub mod cve;
+pub mod file_type;
 pub mod finding;
 pub mod hooks;
 pub mod mcp;
@@ -224,6 +225,19 @@ pub fn collect_scan_evidence(config: &AppConfig, discovery: &DiscoveryReport) ->
                             path: artifact.path,
                             sha256: artifact.sha256,
                             source_label: "mcp".to_string(),
+                            category: FindingCategory::Mcp,
+                            git_remote_url: None,
+                            git_head_sha: None,
+                        },
+                    );
+                }
+                for command_artifact in output.command_artifacts {
+                    insert_artifact(
+                        &mut artifacts_by_path,
+                        BaselineArtifact {
+                            path: command_artifact.path,
+                            sha256: command_artifact.sha256,
+                            source_label: mcp::MCP_COMMAND_SOURCE_LABEL.to_string(),
                             category: FindingCategory::Mcp,
                             git_remote_url: None,
                             git_head_sha: None,

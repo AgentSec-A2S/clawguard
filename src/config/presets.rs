@@ -25,8 +25,18 @@ fn openclaw_preset() -> Preset {
                 ],
             ),
             scan_target(ScanDomain::Skills, ["~/.openclaw/skills"]),
-            // OpenClaw MCP configuration currently lives inside the main JSON5 config.
-            scan_target(ScanDomain::Mcp, ["~/.openclaw/openclaw.json"]),
+            // OpenClaw MCP configuration currently lives inside the main JSON5 config,
+            // plus any plugin-bundled `.mcp.json` at ~/.openclaw/extensions/<id>/.mcp.json
+            // (a 4th MCP mount point OpenClaw reads via resolveBundleMcpConfigPaths —
+            // see repos/openclaw/src/plugins/bundle-mcp.ts). Without this, plugin-bundled
+            // servers are invisible to typosquat, lockfile, and command-drift detectors.
+            scan_target(
+                ScanDomain::Mcp,
+                [
+                    "~/.openclaw/openclaw.json",
+                    "~/.openclaw/extensions/*/.mcp.json",
+                ],
+            ),
             scan_target(ScanDomain::Env, ["~/.openclaw/.env"]),
             scan_target(ScanDomain::Hooks, ["~/.openclaw/hooks"]),
             scan_target(ScanDomain::Bootstrap, ["~/.openclaw/agents"]),

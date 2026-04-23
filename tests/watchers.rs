@@ -123,9 +123,21 @@ fn collect_scan_evidence_maps_mcp_only_targets_into_artifacts() {
 
     let evidence = collect_scan_evidence(&app_config(), &discovery);
 
-    assert_eq!(evidence.artifacts.len(), 1);
-    assert_eq!(evidence.artifacts[0].source_label, "mcp");
-    assert_eq!(evidence.artifacts[0].category, FindingCategory::Mcp);
+    // One config-file artifact + one synthetic per-server command artifact.
+    assert_eq!(evidence.artifacts.len(), 2);
+    let config_artifact = evidence
+        .artifacts
+        .iter()
+        .find(|a| a.source_label == "mcp")
+        .expect("config-file mcp artifact");
+    assert_eq!(config_artifact.category, FindingCategory::Mcp);
+    let command_artifact = evidence
+        .artifacts
+        .iter()
+        .find(|a| a.source_label == "mcp-command")
+        .expect("synthetic mcp-command artifact");
+    assert_eq!(command_artifact.category, FindingCategory::Mcp);
+    assert!(command_artifact.path.starts_with("mcp-command://"));
 }
 
 #[test]

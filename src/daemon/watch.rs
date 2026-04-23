@@ -18,6 +18,7 @@ use crate::discovery::{
 use crate::scan::baseline::{
     diff_artifacts_against_baselines, drifts_to_findings, provenance_findings_for_artifacts,
 };
+use crate::scan::mcp::{command_changed_findings_from_baseline_artifacts, MCP_COMMAND_SOURCE_LABEL};
 use crate::scan::{Finding, ScanResult};
 use crate::state::db::{StateStore, StateStoreError};
 use crate::state::model::{AlertRecord, AlertStatus, ScanSnapshot};
@@ -237,16 +238,35 @@ impl WatchService {
         let evidence = crate::scan::collect_scan_evidence(&self.config, &discovery);
 
         let baselines = self.state.list_baselines()?;
+        // Generic drift pipeline is path-scoped. Filter out synthetic
+        // mcp-command artifacts here so the specialized `mcp-command-changed`
+        // detector below is the single source of truth for that source label.
+        let generic_artifacts: Vec<_> = evidence
+            .artifacts
+            .iter()
+            .filter(|a| a.source_label != MCP_COMMAND_SOURCE_LABEL)
+            .cloned()
+            .collect();
+        let generic_baselines: Vec<_> = baselines
+            .iter()
+            .filter(|b| b.source_label != MCP_COMMAND_SOURCE_LABEL)
+            .cloned()
+            .collect();
         let drift_findings = drifts_to_findings(&diff_artifacts_against_baselines(
-            &baselines,
-            &evidence.artifacts,
+            &generic_baselines,
+            &generic_artifacts,
         ));
         let provenance_findings =
             provenance_findings_for_artifacts(&baselines, &evidence.artifacts);
+        let command_changed = command_changed_findings_from_baseline_artifacts(
+            &baselines,
+            &evidence.artifacts,
+        );
         let combined = ScanResult::from_batches(vec![
             evidence.result.findings().to_vec(),
             drift_findings.clone(),
             provenance_findings,
+            command_changed,
         ]);
         let snapshot = ScanSnapshot {
             recorded_at_unix_ms,
