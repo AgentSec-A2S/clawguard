@@ -102,6 +102,38 @@ enum Commands {
         #[command(subcommand)]
         command: RuntimeCommands,
     },
+    /// Install or inspect ClawGuard host-plugin integrations.
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PluginCommands {
+    /// Install the ClawGuard runtime-guard plugin into the detected
+    /// OpenClaw extensions directory (default: ~/.openclaw/extensions/clawguard-runtime).
+    Install {
+        /// Host runtime to install into. Only `openclaw` is supported in V1.3.
+        host: PluginHost,
+        /// Overwrite existing plugin files if they differ from the embedded version.
+        #[arg(long)]
+        force: bool,
+        /// Override the destination directory. Symlink destinations are rejected.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Report whether the plugin is installed and the broker is resolvable.
+    Status {
+        /// Host runtime to inspect. Only `openclaw` is supported in V1.3.
+        host: PluginHost,
+    },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum PluginHost {
+    /// OpenClaw runtime guard plugin.
+    Openclaw,
 }
 
 #[derive(Debug, Subcommand)]
@@ -368,6 +400,7 @@ pub fn run() -> ExitCode {
         Some(Commands::Posture) => run_posture_command(&cli),
         Some(Commands::Policy { ref command }) => run_policy_command(&cli, command),
         Some(Commands::Runtime { ref command }) => run_runtime_command(&cli, command),
+        Some(Commands::Plugin { ref command }) => run_plugin_command(&cli, command),
         None => run_root_command(&cli),
     }
 }
@@ -1453,6 +1486,119 @@ fn run_runtime_command(_cli: &Cli, command: &RuntimeCommands) -> ExitCode {
     }
 }
 
+fn run_plugin_command(cli: &Cli, command: &PluginCommands) -> ExitCode {
+    use crate::plugin::{install_runtime_plugin, plugin_status, InstallAction};
+
+    let home = resolve_home_dir();
+    match command {
+        PluginCommands::Install { host: _host, force, dir } => {
+            let target = dir
+                .clone()
+                .unwrap_or_else(|| crate::plugin::openclaw::default_install_dir(&home));
+            match install_runtime_plugin(&target, *force) {
+                Ok(report) => {
+                    if cli.json {
+                        match serde_json::to_string_pretty(&report) {
+                            Ok(s) => println!("{s}"),
+                            Err(e) => {
+                                eprintln!("clawguard plugin install: failed to serialize: {e}");
+                                return ExitCode::FAILURE;
+                            }
+                        }
+                    } else {
+                        let created = report
+                            .files
+                            .iter()
+                            .filter(|f| matches!(f.action, InstallAction::Created))
+                            .count();
+                        let overwritten = report
+                            .files
+                            .iter()
+                            .filter(|f| matches!(f.action, InstallAction::Overwritten))
+                            .count();
+                        let unchanged = report
+                            .files
+                            .iter()
+                            .filter(|f| matches!(f.action, InstallAction::Unchanged))
+                            .count();
+                        println!(
+                            "installed ClawGuard runtime guard plugin at {}",
+                            report.target_dir.display()
+                        );
+                        println!(
+                            "  files: {} created, {} overwritten, {} unchanged",
+                            created, overwritten, unchanged
+                        );
+                        println!("  next: restart the OpenClaw session to activate the plugin");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    if cli.json {
+                        println!(
+                            "{{\"status\":\"error\",\"error\":{:?}}}",
+                            err.to_string()
+                        );
+                    } else {
+                        eprintln!("clawguard plugin install: {err}");
+                    }
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        PluginCommands::Status { host: _host } => {
+            let status = plugin_status(&home);
+            if cli.json {
+                match serde_json::to_string_pretty(&status) {
+                    Ok(s) => println!("{s}"),
+                    Err(e) => {
+                        eprintln!("clawguard plugin status: failed to serialize: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            } else {
+                render_plugin_status_human(&status);
+            }
+            if status.installed {
+                ExitCode::SUCCESS
+            } else {
+                // Not-installed is an informational state, not a tool
+                // error — exit 0 so `clawguard plugin status openclaw`
+                // in a shell conditional behaves like `clawguard
+                // policy validate` (parse-ok) does.
+                ExitCode::SUCCESS
+            }
+        }
+    }
+}
+
+fn render_plugin_status_human(status: &crate::plugin::PluginStatus) {
+    let mark = |b: bool| if b { "✔" } else { "✘" };
+    println!("ClawGuard runtime-guard plugin status");
+    println!("  target dir      : {}", status.target_dir.display());
+    println!("  installed       : {} ({})", mark(status.installed), if status.installed { "all files match embedded version" } else { "missing or drifted" });
+    println!("  manifest valid  : {}", mark(status.manifest_valid));
+    for f in &status.files {
+        let state = if !f.present {
+            "missing"
+        } else if !f.matches_expected {
+            "drifted"
+        } else {
+            "ok"
+        };
+        println!("    {:<24} : {}", f.name, state);
+    }
+    match &status.broker_resolvable {
+        Some(path) => println!("  broker on PATH  : ✔ ({})", path.display()),
+        None => println!("  broker on PATH  : ✘ (not resolvable — set `clawguardBin` in plugin config or add clawguard to PATH)"),
+    }
+    println!(
+        "  policy manifest : {} (~/.clawguard/policy.toml)",
+        mark(status.policy_manifest_present)
+    );
+    println!("  hint: {}", status.hint);
+}
+
 fn run_posture_command(cli: &Cli) -> ExitCode {
     use crate::scan::posture::compute_posture;
 
@@ -1480,16 +1626,24 @@ fn run_posture_command(cli: &Cli) -> ExitCode {
                 .map(|snap| compute_posture(&snap.findings).score)
         });
 
+    // Runtime coverage is informational — it does NOT change the
+    // posture score, so persisted snapshot comparisons stay stable.
+    let coverage = crate::plugin::plugin_status(&resolve_home_dir());
+
     if cli.json {
-        render_posture_json(&report, previous_score);
+        render_posture_json(&report, previous_score, &coverage);
     } else {
-        render_posture_human(&report, previous_score);
+        render_posture_human(&report, previous_score, &coverage);
     }
 
     ExitCode::SUCCESS
 }
 
-fn render_posture_human(report: &crate::scan::posture::PostureReport, previous: Option<f64>) {
+fn render_posture_human(
+    report: &crate::scan::posture::PostureReport,
+    previous: Option<f64>,
+    coverage: &crate::plugin::PluginStatus,
+) {
     println!(
         "\nPermission Posture Score: {:.0} ({})\n",
         report.score, report.band
@@ -1518,9 +1672,40 @@ fn render_posture_human(report: &crate::scan::posture::PostureReport, previous: 
         };
         println!("Trend: {} from {:.0} (previous scan)\n", direction, prev);
     }
+
+    // Runtime guard coverage block — informational, does not affect score.
+    let installed_marker = if coverage.installed { "✔" } else { "✘" };
+    let broker_marker = if coverage.broker_resolvable.is_some() { "✔" } else { "✘" };
+    let policy_marker = if coverage.policy_manifest_present { "✔" } else { "✘" };
+    println!("Runtime guard coverage:");
+    println!(
+        "  {} plugin installed     ({})",
+        installed_marker,
+        coverage.target_dir.display()
+    );
+    match &coverage.broker_resolvable {
+        Some(path) => println!("  {} broker on PATH      ({})", broker_marker, path.display()),
+        None => println!(
+            "  {} broker on PATH      (not found — set plugin `clawguardBin` or add to PATH)",
+            broker_marker
+        ),
+    }
+    println!(
+        "  {} policy manifest      (~/.clawguard/policy.toml {})",
+        policy_marker,
+        if coverage.policy_manifest_present { "present" } else { "absent → using built-in defaults" }
+    );
+    if !coverage.installed || coverage.broker_resolvable.is_none() {
+        println!("  hint: {}", coverage.hint);
+    }
+    println!();
 }
 
-fn render_posture_json(report: &crate::scan::posture::PostureReport, previous: Option<f64>) {
+fn render_posture_json(
+    report: &crate::scan::posture::PostureReport,
+    previous: Option<f64>,
+    coverage: &crate::plugin::PluginStatus,
+) {
     #[derive(serde::Serialize)]
     struct PostureOutput<'a> {
         posture_score: f64,
@@ -1528,11 +1713,22 @@ fn render_posture_json(report: &crate::scan::posture::PostureReport, previous: O
         trend: Option<PostureTrend>,
         breakdown: &'a [crate::scan::posture::PostureContribution],
         finding_count: usize,
+        runtime_coverage: RuntimeCoverageJson<'a>,
     }
     #[derive(serde::Serialize)]
     struct PostureTrend {
         previous_score: f64,
         direction: String,
+    }
+    #[derive(serde::Serialize)]
+    struct RuntimeCoverageJson<'a> {
+        plugin_installed: bool,
+        plugin_dir: &'a std::path::Path,
+        manifest_valid: bool,
+        broker_resolvable: bool,
+        broker_path: Option<&'a std::path::Path>,
+        policy_manifest_present: bool,
+        hint: &'a str,
     }
 
     let trend = previous.map(|prev| PostureTrend {
@@ -1553,6 +1749,15 @@ fn render_posture_json(report: &crate::scan::posture::PostureReport, previous: O
         trend,
         breakdown: &report.breakdown,
         finding_count: report.finding_count,
+        runtime_coverage: RuntimeCoverageJson {
+            plugin_installed: coverage.installed,
+            plugin_dir: coverage.target_dir.as_path(),
+            manifest_valid: coverage.manifest_valid,
+            broker_resolvable: coverage.broker_resolvable.is_some(),
+            broker_path: coverage.broker_resolvable.as_deref(),
+            policy_manifest_present: coverage.policy_manifest_present,
+            hint: coverage.hint.as_str(),
+        },
     };
 
     match serde_json::to_string_pretty(&output) {

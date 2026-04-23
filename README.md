@@ -80,93 +80,16 @@ ClawGuard exists to give you an action-oriented answer:
   - Slash commands: `/clawguard_help`, `/clawguard_feed`, `/clawguard_status`, `/clawguard_alerts`
 - Config-driven enrichment: reads `openclaw.json` to discover `skills.load.extraDirs` and `hooks.internal.load.extraDirs`, scanning those directories automatically alongside the default roots
 - `OPENCLAW_AGENT_DIR` env var override: if set, ClawGuard scans that directory for bootstrap files in addition to the default `~/.openclaw/agents`
+- Deterministic Tier-1 runtime guard (V1.3 preview) that sits between the host agent runtime and each tool call:
+  - fires on every `before_tool_call` / `after_tool_call` hook instead of running ahead of time
+  - can **Block** catastrophic actions (`rm -rf`, `dd of=/dev/`, `mkfs`, fork bomb, `curl | sh`, etc.) before they execute — not alert-only
+  - worst-verdict-wins merge over 5 rules: destructive-action, lethal-trifecta precondition, path-boundary, per-session rate limit, prompt-injection shape
+  - fails open on rule panic with a `clawguard-adapter-panic` stderr marker so a buggy rule can never wedge OpenClaw
+  - policy is loaded from `~/.clawguard/policy.toml` (built-in defaults when absent); `clawguard policy validate` parses a manifest without applying it
+  - ships as a sibling OpenClaw plugin `openclaw-plugin-runtime/` (separate from the existing SSE-alerting `openclaw-plugin/`) that spawns a `clawguard runtime broker` subprocess per session over NDJSON stdio
+  - one-shot install via `clawguard plugin install openclaw` (files embedded into the binary, refuses drifted/symlinked destinations without `--force`); `clawguard plugin status openclaw` verifies the install and surfaces the same coverage block inside `clawguard posture` as a `runtime_coverage` object
+  - runbook: [`docs/runbooks/clawguard-runtime-guard.md`](../docs/runbooks/clawguard-runtime-guard.md)
 - Conservative scope: no broad auto-remediation, no background trust UI, no hidden mutation of OpenClaw state
-
-## Runtime guard (V1.3 preview)
-
-ClawGuard V1.3 ships a deterministic, deny-by-default Tier-1 runtime
-policy engine that sits **between** the host agent runtime and each
-tool call. Unlike the V1.x scanners, which run ahead of time and flag
-configuration drift, the runtime guard fires on every tool invocation
-and can **Block** a catastrophic action before it executes.
-
-```text
-OpenClaw before_tool_call
-  -> clawguard-runtime plugin (TS shim, spawned once per session)
-  -> clawguard runtime broker (subprocess, NDJSON over stdio)
-  -> PolicyEngine
-     ├─ destructive_action_check        (Block on rm-rf, dd, mkfs, ...)
-     ├─ lethal_trifecta_precondition    (Warn on sensitive-path touch)
-     ├─ path_boundary_check             (Block on forbidden-writes)
-     ├─ rate_limit_check                (Warn on burst of destructive)
-     └─ prompt_injection_shape_check    (Warn/Suspect on tool results)
-  -> AdapterResponse { decision, block, block_reason, evidence }
-```
-
-Worst-verdict-wins: `Allow < Warn < Suspect < Block`. On panic the
-broker fails open with a `clawguard-adapter-panic` stderr marker so a
-buggy rule can never wedge the host runtime.
-
-### Default policy manifest
-
-The runtime engine loads `~/.clawguard/policy.toml` (built-in defaults
-apply when the file is absent). Key sections:
-
-- `[[destructive_actions.patterns]]` — tokenized, whitespace-bounded
-  matchers. Default set ships `rm -rf`, `dd of=/dev/`, `mkfs`, `DROP
-  TABLE`, `TRUNCATE TABLE`, `git push --force`, fork bomb, reverse
-  shell, `curl | sh`, `wget -O- | sh`. Patterns with
-  `match_in_shell_tunnel = true` also fire through `sh -c` / `bash -c`
-  wrappers up to depth 3 and against inert-quote-split forms like
-  `r''m -r''f ~`.
-- `[lethal_trifecta]` — sensitive paths whose read/write flags a
-  precondition (combined with a later exfil call, Sprint 3 will
-  escalate). Default includes `~/.ssh`, `~/.aws`, `~/.config/gcloud`,
-  `~/.openclaw/.env`, `/etc/shadow`, `/etc/sudoers`, etc.
-  Dot-segment obfuscation (`/etc/./shadow`) is collapsed before match.
-- `[path_boundary]` — `forbidden_writes` list (defaults: `~/.openclaw/hooks`,
-  `~/.openclaw/plugins`, `~/.clawguard`, plus the two approval files)
-  and optional `workspace_root` for write-escape detection. Dot-segment
-  collapse applies here too.
-- `[rate_limit]` — sliding window over destructive-class calls, scoped
-  **per session_id** (engine keeps `HashMap<session_id, RateLimiter>`
-  bounded at 1024 sessions). Default: 5 calls per 60 s.
-- `[prompt_injection]` — weighted substring scan over canonicalized
-  tool results. Default threshold 3, curated role-override markers and
-  instruction-override phrases. Results go through NFKC + zero-width
-  strip + whitespace collapse before scoring.
-
-### Commands
-
-- `clawguard policy init [--force]` — write the default manifest to
-  `~/.clawguard/policy.toml` (0600).
-- `clawguard policy validate [--path <path>]` — parse a manifest
-  without applying it. Emits pattern and sensitive-path counts.
-- `clawguard runtime broker [--manifest <path>]` — the per-session
-  subprocess that the OpenClaw plugin spawns. Reads one JSON event per
-  stdin line, writes one verdict per stdout line.
-
-### Runtime finding kinds
-
-Verdicts surface as regular findings so they feed the existing posture
-score and persistence layer:
-
-| Finding kind                            | Severity | OWASP ASI | Emits on                                         |
-| --------------------------------------- | -------- | --------- | ------------------------------------------------ |
-| `runtime-destructive-action`            | Critical | ASI02     | Tokenized destructive pattern matches args       |
-| `runtime-lethal-trifecta-precondition`  | High     | ASI06     | Tool call touches a `sensitive_paths` entry      |
-| `runtime-path-escape`                   | High     | ASI02     | Call targets `forbidden_writes` or escapes root  |
-| `runtime-rate-limit-exceeded`           | Medium   | ASI02     | Destructive-class calls > window in one session  |
-| `runtime-prompt-injection-shape`        | Medium   | ASI07     | Tool result scores ≥ threshold on curated list   |
-
-### OpenClaw plugin install (preview)
-
-The runtime guard ships as a sibling plugin at
-`clawguard/openclaw-plugin-runtime/` (separate from the existing
-SSE-alerting `openclaw-plugin/`). Copy the directory into
-`~/.openclaw/extensions/clawguard-runtime/` and ensure `clawguard` is
-on `PATH`. The `plugin install openclaw` CLI helper lands in Sprint 2
-§6 — until then the manual copy is the supported path.
 
 ## What It Checks Today
 
@@ -254,6 +177,12 @@ ClawGuard keeps the detector catalog intentionally small and high-signal.
   - `mcp-server-name-typosquat` (High, ASI06) — configured MCP server name is a near-match (Damerau–Levenshtein d≤1 for normalized len 5–7, d≤2 for len≥8) of a canonical server on the bundled `data/mcp_server_allowlist.txt` (30+ entries), after NFKC + lowercase + separator-strip normalization. Short names (normalized len < 5) are exempt to keep the rule high-signal
   - `mcp-command-changed` (High, ASI06) — per-server baseline drift on the resolved `{command, args, url, cwd}` tuple, emitted via a synthetic `mcp-command://<config>#<source>::<name>` artifact so a server switching its launcher binary or cwd shows up as its own finding distinct from generic config drift
   - `file-type-mismatch` (High, ASI06) — byte-first signature sweep in `skill/` and hook dirs: any file claiming a text-like extension (or extensionless hook) whose first 16 bytes match a native executable header (ELF / PE-MZ / Mach-O MH_MAGIC · MH_MAGIC_64 · MH_CIGAM · MH_CIGAM_64 / fat-universal FAT_MAGIC · FAT_CIGAM). Short-circuits on the binary-extension allowlist (`.node`, `.wasm`, `.so`, `.dylib`, `.dll`, `.exe`, `.bin`, `.o`, `.a`) and enforces scan-boundary symlink-escape guards
+- **V1.3 Sprint 2 (shipped 2026-04-23)** — runtime policy guard fires on every tool call via the OpenClaw `before_tool_call` / `after_tool_call` hooks. All five kinds map to OWASP ASI; verdicts surface as regular findings so they feed posture scoring and SQLite persistence:
+  - `runtime-destructive-action` (Critical, ASI02) — tokenized destructive pattern (`rm -rf`, `dd of=/dev/`, `mkfs`, `DROP TABLE`, `git push --force`, fork bomb, reverse shell, `curl | sh`, `wget -O- | sh`) matches a tool-call argument after NFKC + zero-width strip + whitespace collapse; also fires through `sh -c` / `bash -c` wrappers up to depth 3 and defeats inert-quote-split forms like `r''m -r''f ~`
+  - `runtime-lethal-trifecta-precondition` (High, ASI06) — tool call reads or writes a `sensitive_paths` entry (`~/.ssh`, `~/.aws`, `~/.config/gcloud`, `~/.openclaw/.env`, `/etc/shadow`, `/etc/sudoers`, etc.); dot-segment obfuscation (`/etc/./shadow`) is collapsed before match. Emits Warn; Sprint 3 will escalate when paired with an exfil call
+  - `runtime-path-escape` (High, ASI02) — call targets a `forbidden_writes` path (defaults: `~/.openclaw/hooks`, `~/.openclaw/plugins`, `~/.clawguard`, plus the two approval files) or escapes `workspace_root`; dot-segment collapse applies here too
+  - `runtime-rate-limit-exceeded` (Medium, ASI02) — destructive-class calls exceed the sliding window in one session; engine keeps a per-`session_id` `HashMap<session_id, RateLimiter>` bounded at 1024 sessions, so rotating session ids does not bypass the counter. Default window: 5 calls / 60 s
+  - `runtime-prompt-injection-shape` (Medium, ASI07) — canonicalized tool result scores at or above threshold on a curated list of role-override and instruction-override markers after NFKC + zero-width strip + whitespace collapse. Default threshold 3
 - Permission posture scoring via `clawguard posture`:
   - weighted sum across 33 specific finding kinds with per-kind weights (1–5) and severity-based fallback
   - score bands: Clean → Low → Moderate → Elevated → Critical
@@ -421,6 +350,22 @@ cargo build --release
   - score bands: Clean (0), Low (1–10), Moderate (11–25), Elevated (26–50), Critical (51+)
   - shows a per-kind breakdown table (kind × count × weight = subtotal) and trend vs previous snapshot
   - `clawguard posture --json` emits machine-readable JSON with score, band, breakdown array, and trend
+- `clawguard policy init [--force]`
+  - writes the default runtime policy manifest to `~/.clawguard/policy.toml` (0600)
+  - key sections: `[[destructive_actions.patterns]]` (tokenized, whitespace-bounded matchers; `match_in_shell_tunnel = true` also fires through `sh -c` / `bash -c` up to depth 3), `[lethal_trifecta]` (sensitive paths), `[path_boundary]` (`forbidden_writes` + optional `workspace_root`), `[rate_limit]` (sliding window, per session_id), `[prompt_injection]` (weighted substrings, default threshold 3)
+- `clawguard policy validate [--path <path>]`
+  - parses a manifest without applying it and prints pattern + sensitive-path counts; non-zero exit on parse error
+- `clawguard runtime broker [--manifest <path>]`
+  - the per-session subprocess that the OpenClaw plugin spawns; reads one JSON event per stdin line and writes one verdict per stdout line
+  - not intended for direct operator use — use `clawguard plugin install openclaw` to wire up the broker via the host plugin
+- `clawguard plugin install openclaw [--force] [--dir <path>]`
+  - installs the runtime-guard plugin into `~/.openclaw/extensions/clawguard-runtime/` (or `--dir` for nonstandard locations); embeds the plugin files so the single binary is enough
+  - refuses to overwrite drifted files without `--force`, and rejects symlinks outright (defeats planted-symlink traps inside the extensions dir)
+  - `clawguard --json plugin install openclaw` emits a per-file structured report with `action: created | overwritten | unchanged`
+- `clawguard plugin status openclaw`
+  - reports whether all three plugin files are present and byte-exact matches of the embedded version, whether `clawguard` resolves on `PATH` for the plugin's spawn, and whether `~/.clawguard/policy.toml` exists
+  - `clawguard --json plugin status openclaw` emits the full status object
+  - the same coverage block is now part of `clawguard posture` output (as a `runtime_coverage` object in `--json` mode), so posture reports reflect both static-scan findings AND whether the runtime guard is actually hooked
 - `clawguard --json` or `clawguard scan --json`
   - emits machine-readable findings JSON derived from the shared scan result model
 - `clawguard --no-interactive` or `clawguard scan --no-interactive`
